@@ -1,3 +1,9 @@
+"""Tier 2 (io) — read a YAML prompt suite and validate it before execution.
+
+  1. Happy load          example suite parses, all kinds recognized
+  2. Schema rejection    invalid roles, unknown assertion kinds,
+                         out-of-range temperature, non-mapping top-level
+"""
 from __future__ import annotations
 
 from pathlib import Path
@@ -6,10 +12,16 @@ import pytest
 
 from grok_harness.loader import load_suite
 
+pytestmark = pytest.mark.io
+
 
 def _examples_path() -> Path:
-    return Path(__file__).resolve().parents[1] / "examples" / "prompts.yaml"
+    return Path(__file__).resolve().parents[2] / "examples" / "prompts.yaml"
 
+
+# ----------------------------------------------------------------------------
+# 1. Happy load.
+# ----------------------------------------------------------------------------
 
 def test_load_example_suite():
     suite = load_suite(_examples_path())
@@ -36,6 +48,10 @@ def test_assertion_kinds_all_known():
         for a in case.assertions:
             assert a.kind in known
 
+
+# ----------------------------------------------------------------------------
+# 2. Schema rejection — bad suites must fail loudly, not silently.
+# ----------------------------------------------------------------------------
 
 def test_top_level_must_be_mapping(tmp_path: Path):
     p = tmp_path / "bad.yaml"

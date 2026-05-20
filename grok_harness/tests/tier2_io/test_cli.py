@@ -1,8 +1,15 @@
-"""CLI integration: run a suite end-to-end via click.testing.CliRunner.
+"""Tier 2 (io) — end-to-end CLI integration via click.testing.CliRunner.
 
-The federation provider and Grok HTTP calls are stubbed via respx + a
-monkeypatched token getter, so this test exercises the real wiring
-between config, loader, runner, reporter, and audit pipelines.
+This is the user-facing entry point that wires loader -> runner ->
+reporter -> audit and applies env-loaded config. Ordered:
+
+  1. Discoverability    --help
+  2. Happy run          successful suite writes JSON + JUnit + audit log
+  3. Failure exit       non-zero exit code on assertion failure
+  4. Config errors      missing env vars surface clearly
+
+Federation provider and Grok HTTP calls are stubbed; this exercises the
+real wiring between config, loader, runner, reporter, and audit.
 """
 from __future__ import annotations
 
@@ -18,6 +25,8 @@ import respx
 from click.testing import CliRunner
 
 from grok_harness.__main__ import cli
+
+pytestmark = pytest.mark.io
 
 
 @pytest.fixture

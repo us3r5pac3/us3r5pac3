@@ -1,4 +1,10 @@
-"""Shared fixtures: harness settings and a writable workload-token path."""
+"""Shared fixtures and tier-ordered collection.
+
+The directory layout (tier1_core / tier2_io / tier3_infra) already
+gives the right macro ordering. This hook enforces *intra-tier*
+ordering so that, within each tier, files run in the order that best
+informs the reader from the most fundamental concern outward.
+"""
 from __future__ import annotations
 
 from pathlib import Path
@@ -6,6 +12,38 @@ from pathlib import Path
 import pytest
 
 from grok_harness.config import AzureSettings, HarnessSettings, KeycloakSettings
+
+
+# File-level importance ordering inside each tier. Files not listed here
+# (e.g. new ones) fall to the end of their tier in alphabetical order.
+_INTRA_TIER_ORDER: dict[str, int] = {
+    # tier1_core: send a prompt -> judge the response -> orchestrate a suite
+    "tier1_core/test_client.py": 0,
+    "tier1_core/test_evaluators.py": 1,
+    "tier1_core/test_runner.py": 2,
+    # tier2_io: read suite -> emit results -> wire it together
+    "tier2_io/test_loader.py": 0,
+    "tier2_io/test_reporter.py": 1,
+    "tier2_io/test_cli.py": 2,
+    # tier3_infra: bootstrap config -> per-request auth -> observability
+    "tier3_infra/test_config.py": 0,
+    "tier3_infra/test_auth.py": 1,
+    "tier3_infra/test_audit.py": 2,
+}
+
+
+def pytest_collection_modifyitems(config, items):
+    def key(item):
+        path = str(item.path)
+        rel = path.split("/tests/", 1)[-1]
+        # Sort by (tier directory, intra-tier ordinal, original index for stability)
+        tier = rel.split("/", 1)[0]
+        for suffix, ordinal in _INTRA_TIER_ORDER.items():
+            if rel == suffix or rel.endswith("/" + suffix):
+                return (tier, ordinal, 0)
+        return (tier, 99, rel)
+
+    items.sort(key=key)
 
 
 @pytest.fixture

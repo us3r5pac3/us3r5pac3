@@ -1,9 +1,18 @@
-"""Tests for reporter output formats."""
+"""Tier 2 (io) — turn outcomes into something a human or CI reads.
+
+Ordered:
+
+  1. Console summary    what an operator sees in their terminal
+  2. JUnit XML          what CI ingests; must distinguish <failure> vs <error>
+  3. JSON               full structured result for offline analysis
+"""
 from __future__ import annotations
 
 import json
 import xml.etree.ElementTree as ET
 from pathlib import Path
+
+import pytest
 
 from grok_harness.models import (
     Assertion,
@@ -12,6 +21,8 @@ from grok_harness.models import (
     CompletionResult,
 )
 from grok_harness.reporter import summarize, write_json, write_junit
+
+pytestmark = pytest.mark.io
 
 
 def _completion(latency_ms: float = 50.0) -> CompletionResult:
@@ -64,20 +75,22 @@ def _outcomes() -> list[CaseOutcome]:
     ]
 
 
-def test_write_json_roundtrip(tmp_path: Path):
-    path = tmp_path / "out.json"
-    write_json(_outcomes(), path)
-    data = json.loads(path.read_text())
-    assert len(data) == 3
-    ids = {row["case_id"] for row in data}
-    assert ids == {"pass-1", "fail-1", "error-1"}
-    # CompletionResult should serialize for passes/fails, None for errors.
-    fail_row = next(r for r in data if r["case_id"] == "fail-1")
-    assert fail_row["completion"]["request_id"] == "r1"
-    err_row = next(r for r in data if r["case_id"] == "error-1")
-    assert err_row["completion"] is None
-    assert "503" in err_row["error"]
+# ----------------------------------------------------------------------------
+# 1. Console summary — what the operator sees first.
+# ----------------------------------------------------------------------------
 
+def test_summarize_text(tmp_path: Path):
+    text = summarize(_outcomes())
+    assert "1/3 passed" in text
+    assert "[PASS] pass-1" in text
+    assert "[FAIL] fail-1" in text
+    assert "[FAIL] error-1" in text
+    assert "503" in text
+
+
+# ----------------------------------------------------------------------------
+# 2. JUnit XML — failures from assertions, errors from infrastructure faults.
+# ----------------------------------------------------------------------------
 
 def test_write_junit_distinguishes_failures_from_errors(tmp_path: Path):
     path = tmp_path / "junit.xml"
@@ -102,10 +115,19 @@ def test_write_junit_distinguishes_failures_from_errors(tmp_path: Path):
     assert "503" in (err_el.get("message") or "")
 
 
-def test_summarize_text(tmp_path: Path):
-    text = summarize(_outcomes())
-    assert "1/3 passed" in text
-    assert "[PASS] pass-1" in text
-    assert "[FAIL] fail-1" in text
-    assert "[FAIL] error-1" in text
-    assert "503" in text
+# ----------------------------------------------------------------------------
+# 3. JSON — full structured result for offline analysis.
+# ----------------------------------------------------------------------------
+
+def test_write_json_roundtrip(tmp_path: Path):
+    path = tmp_path / "out.json"
+    write_json(_outcomes(), path)
+    data = json.loads(path.read_text())
+    assert len(data) == 3
+    ids = {row["case_id"] for row in data}
+    assert ids == {"pass-1", "fail-1", "error-1"}
+    fail_row = next(r for r in data if r["case_id"] == "fail-1")
+    assert fail_row["completion"]["request_id"] == "r1"
+    err_row = next(r for r in data if r["case_id"] == "error-1")
+    assert err_row["completion"] is None
+    assert "503" in err_row["error"]

@@ -1,4 +1,12 @@
-"""Tests for the audit log pipeline."""
+"""Tier 3 (infra) — append-only JSONL audit log with redaction.
+
+Compliance/operational concern. Ordered:
+
+  1. Redaction         prompt/response content is hashed by default
+  2. Opt-out           redact_prompts=False keeps the full content
+  3. Format            ISO UTC timestamp on every record
+  4. Append behavior   sequential writes, parent dir auto-created
+"""
 from __future__ import annotations
 
 import hashlib
@@ -6,7 +14,11 @@ import json
 import re
 from pathlib import Path
 
+import pytest
+
 from grok_harness.audit import configure
+
+pytestmark = pytest.mark.infra
 
 
 def _read(path: Path) -> list[dict]:

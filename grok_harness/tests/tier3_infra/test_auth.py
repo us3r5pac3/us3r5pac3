@@ -1,13 +1,20 @@
-"""Exhaustive tests for the two-leg Keycloak -> Azure federation.
+"""Tier 3 (infra) — Keycloak -> Azure federation for the bearer token.
 
-Wire shapes asserted here match:
+Required to call Grok at all, but not the focus of prompt testing. Wire
+shapes asserted here come from:
 
 - RFC 8693 (OAuth 2.0 Token Exchange) for the Keycloak leg.
-  https://datatracker.ietf.org/doc/html/rfc8693
 - Microsoft identity platform "Access tokens" / "client credentials with
   certificate" doc for the Azure leg (JWT bearer assertion).
-- AKS/GKE projected service account token semantics — we only treat the
-  token as an opaque JWT subject_token.
+- AKS/GKE projected service-account token semantics (opaque JWT).
+
+Ordered:
+
+  1. Round-trip            wire-shape conformance for both legs
+  2. Caching / refresh     reuse within validity; refresh past skew
+  3. Failure handling      missing inputs, missing fields, 4xx vs 5xx
+  4. Override paths        custom token-exchange endpoint
+  5. Helper contract       BearerToken.expired skew
 """
 from __future__ import annotations
 
@@ -19,6 +26,8 @@ import pytest
 import respx
 
 from grok_harness.auth import BearerToken, FederatedTokenProvider
+
+pytestmark = pytest.mark.infra
 
 
 def _form(req: httpx.Request) -> dict[str, str]:

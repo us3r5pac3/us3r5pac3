@@ -1,4 +1,12 @@
-"""End-to-end runner tests against a mocked Azure surface."""
+"""Tier 1 (core) — drive a suite of prompts and gather outcomes.
+
+The runner is what turns a YAML suite into the pass/fail report. Tests
+are ordered:
+
+  1. Suite execution    mixed pass / fail / error tally is correct
+  2. Observability      audit log captures suite + case lifecycle events
+  3. Operational gate   bounded concurrency under the configured limit
+"""
 from __future__ import annotations
 
 import json
@@ -12,6 +20,8 @@ import structlog
 from grok_harness.runner import SuiteRunner
 from grok_harness.models import Assertion, Message, TestCase, TestSuite
 
+pytestmark = pytest.mark.core
+
 
 def _ok(content: str) -> dict:
     return {
@@ -22,7 +32,7 @@ def _ok(content: str) -> dict:
 
 @pytest.fixture(autouse=True)
 def _stub_federation(monkeypatch):
-    """Bypass the real federation: every get_token() returns a stub bearer."""
+    """Bypass real federation: get_token() returns a stub bearer."""
     import time
 
     from grok_harness import auth
@@ -33,10 +43,12 @@ def _stub_federation(monkeypatch):
     monkeypatch.setattr(auth.FederatedTokenProvider, "get_token", _fake)
 
 
+# ----------------------------------------------------------------------------
+# 1. Suite execution — the heart of the runner.
+# ----------------------------------------------------------------------------
+
 @pytest.mark.asyncio
-async def test_runner_passes_and_fails_cases(
-    settings, grok_completions_url, keycloak_token_url, azure_token_url
-):
+async def test_runner_passes_and_fails_cases(settings, grok_completions_url):
     suite = TestSuite(
         name="mixed",
         cases=[
@@ -57,9 +69,6 @@ async def test_runner_passes_and_fails_cases(
         ],
     )
     async with respx.mock(assert_all_called=True) as router:
-        # Federation calls are bypassed by the autouse stub above, but respx
-        # still records every outbound HTTP call -- so we don't need to mock
-        # the KC/Azure endpoints here. We only need the Grok route.
         route = router.post(grok_completions_url)
         route.side_effect = [
             httpx.Response(200, json=_ok("paris")),
@@ -81,11 +90,46 @@ async def test_runner_passes_and_fails_cases(
     assert by_id["error-503"].error is not None
 
 
+# ----------------------------------------------------------------------------
+# 2. Observability — every case must produce an audit trail.
+# ----------------------------------------------------------------------------
+
 @pytest.mark.asyncio
-async def test_runner_respects_concurrency(
-    settings, grok_completions_url
-):
-    """Semaphore must cap in-flight requests at max_concurrency."""
+async def test_runner_writes_audit_log(settings, grok_completions_url, tmp_path: Path):
+    from grok_harness.audit import configure
+
+    audit_path = tmp_path / "audit.jsonl"
+    settings.audit_log_path = audit_path
+    log = configure(audit_path, redact_prompts=True)
+
+    suite = TestSuite(
+        name="audit",
+        cases=[TestCase(id="c1", messages=[Message(role="user", content="hello")])],
+    )
+    async with respx.mock() as router:
+        router.post(grok_completions_url).mock(
+            return_value=httpx.Response(200, json=_ok("hi"))
+        )
+        await SuiteRunner(settings, log).run(suite)
+
+    lines = audit_path.read_text().strip().splitlines()
+    events = [json.loads(line) for line in lines]
+    kinds = {e.get("event") for e in events}
+    assert {"suite.start", "case.start", "case.end", "suite.end"} <= kinds
+
+    case_end = next(e for e in events if e.get("event") == "case.end")
+    # Long-form response should have been redacted to its hash.
+    assert "response_sha256" in case_end
+    assert "response" not in case_end
+    assert case_end["passed"] is True
+
+
+# ----------------------------------------------------------------------------
+# 3. Operational gate — never exceed configured concurrency.
+# ----------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_runner_respects_concurrency(settings, grok_completions_url):
     import asyncio
 
     settings.max_concurrency = 2
@@ -115,35 +159,3 @@ async def test_runner_respects_concurrency(
         await SuiteRunner(settings, structlog.get_logger("t")).run(suite)
 
     assert peak <= 2
-
-
-@pytest.mark.asyncio
-async def test_runner_writes_audit_log(
-    settings, grok_completions_url, tmp_path: Path
-):
-    from grok_harness.audit import configure
-
-    audit_path = tmp_path / "audit.jsonl"
-    settings.audit_log_path = audit_path
-    log = configure(audit_path, redact_prompts=True)
-
-    suite = TestSuite(
-        name="audit",
-        cases=[TestCase(id="c1", messages=[Message(role="user", content="hello")])],
-    )
-    async with respx.mock() as router:
-        router.post(grok_completions_url).mock(
-            return_value=httpx.Response(200, json=_ok("hi"))
-        )
-        await SuiteRunner(settings, log).run(suite)
-
-    lines = audit_path.read_text().strip().splitlines()
-    events = [json.loads(line) for line in lines]
-    kinds = {e.get("event") for e in events}
-    assert {"suite.start", "case.start", "case.end", "suite.end"} <= kinds
-
-    case_end = next(e for e in events if e.get("event") == "case.end")
-    # response was a long-form string, audit must have hashed it.
-    assert "response_sha256" in case_end
-    assert "response" not in case_end
-    assert case_end["passed"] is True

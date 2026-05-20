@@ -1,10 +1,19 @@
-"""Tests for the Grok 4.3 Azure OpenAI-compatible client.
+"""Tier 1 (core) — sending a prompt to Grok 4.3 and parsing the response.
 
-Wire shape per Azure OpenAI Service "Chat completions" REST reference:
-- POST /openai/deployments/{deployment-id}/chat/completions?api-version=...
+Without this round-trip there is nothing to assert against. Ordered:
+
+  1. Round-trip                happy path content + usage + request id
+  2. Generation parameters     seed / temperature / top_p forwarded
+  3. Response-shape resilience missing usage fields
+  4. Wire correctness          URL construction (no double slash)
+  5. Transient failures        429 retry, 503 exhaust
+  6. Definitive failures       401 not retried, 400 content_filter body kept
+  7. Error type contract       GrokError carries status / body / request id
+
+Wire shape conforms to Azure OpenAI Service "Chat completions" REST:
+- POST /openai/deployments/{deployment}/chat/completions?api-version=...
 - Authorization: Bearer <token>
-- Response body has choices[0].message.content, usage.* and finish_reason.
-- x-ms-request-id correlates server-side traces.
+- choices[0].message.content, usage.*, x-ms-request-id header.
 """
 from __future__ import annotations
 
@@ -18,6 +27,8 @@ import respx
 from grok_harness.auth import BearerToken, FederatedTokenProvider
 from grok_harness.client import GrokClient, GrokError
 from grok_harness.models import Message, TestCase
+
+pytestmark = pytest.mark.core
 
 
 class _StubTokens(FederatedTokenProvider):
@@ -44,6 +55,10 @@ def _ok_body(content: str = "Paris.") -> dict:
         },
     }
 
+
+# ----------------------------------------------------------------------------
+# 1. Round-trip — the central thing this module does.
+# ----------------------------------------------------------------------------
 
 @pytest.mark.asyncio
 async def test_happy_path_returns_completion(settings, grok_completions_url):
@@ -75,6 +90,10 @@ async def test_happy_path_returns_completion(settings, grok_completions_url):
     assert res.latency_ms >= 0
 
 
+# ----------------------------------------------------------------------------
+# 2. Generation parameters — make sure prompts are reproducible.
+# ----------------------------------------------------------------------------
+
 @pytest.mark.asyncio
 async def test_seed_and_generation_params_forwarded(settings, grok_completions_url):
     async with respx.mock(assert_all_called=True) as router:
@@ -101,12 +120,14 @@ async def test_seed_and_generation_params_forwarded(settings, grok_completions_u
     assert sent["seed"] == 42
 
 
+# ----------------------------------------------------------------------------
+# 3. Response-shape resilience.
+# ----------------------------------------------------------------------------
+
 @pytest.mark.asyncio
 async def test_missing_usage_defaults_to_zero(settings, grok_completions_url):
     """Some Azure deployments omit usage on streaming or filtered responses."""
-    body = {
-        "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
-    }
+    body = {"choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}]}
     async with respx.mock() as router:
         router.post(grok_completions_url).mock(return_value=httpx.Response(200, json=body))
         async with httpx.AsyncClient() as http:
@@ -117,6 +138,32 @@ async def test_missing_usage_defaults_to_zero(settings, grok_completions_url):
     assert res.completion_tokens == 0
     assert res.total_tokens == 0
 
+
+# ----------------------------------------------------------------------------
+# 4. Wire correctness — the URL must be exactly what Azure expects.
+# ----------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_url_construction_no_double_slash(settings):
+    expected_url = (
+        "https://grok-43.eastus2.inference.ml.azure.us/"
+        "openai/deployments/grok-4.3/chat/completions"
+        "?api-version=2024-12-01-preview"
+    )
+    async with respx.mock(assert_all_called=True) as router:
+        route = router.post(expected_url).mock(
+            return_value=httpx.Response(200, json=_ok_body())
+        )
+        async with httpx.AsyncClient() as http:
+            await GrokClient(settings, _StubTokens(), http).complete(
+                TestCase(id="t", messages=[Message(role="user", content="x")])
+            )
+    assert route.call_count == 1
+
+
+# ----------------------------------------------------------------------------
+# 5. Transient failure handling.
+# ----------------------------------------------------------------------------
 
 @pytest.mark.asyncio
 async def test_retries_on_429_then_succeeds(settings, grok_completions_url):
@@ -150,6 +197,10 @@ async def test_retries_on_503_then_exhausts(settings, grok_completions_url):
     assert route.call_count == 3
 
 
+# ----------------------------------------------------------------------------
+# 6. Definitive failures must NOT be retried — auth, content filter.
+# ----------------------------------------------------------------------------
+
 @pytest.mark.asyncio
 async def test_401_is_not_retried(settings, grok_completions_url):
     async with respx.mock() as router:
@@ -172,7 +223,7 @@ async def test_401_is_not_retried(settings, grok_completions_url):
 
 @pytest.mark.asyncio
 async def test_400_content_filter_carries_body(settings, grok_completions_url):
-    """Azure returns 400 with code=content_filter when safety blocks the request."""
+    """Azure returns 400 code=content_filter when safety blocks the request."""
     payload = {
         "error": {
             "code": "content_filter",
@@ -193,25 +244,9 @@ async def test_400_content_filter_carries_body(settings, grok_completions_url):
     assert "content_filter" in ei.value.body
 
 
-@pytest.mark.asyncio
-async def test_url_construction_no_double_slash(settings):
-    """Pydantic HttpUrl appends '/', client must normalize it away."""
-    expected_url = (
-        "https://grok-43.eastus2.inference.ml.azure.us/"
-        "openai/deployments/grok-4.3/chat/completions"
-        "?api-version=2024-12-01-preview"
-    )
-    async with respx.mock(assert_all_called=True) as router:
-        route = router.post(expected_url).mock(
-            return_value=httpx.Response(200, json=_ok_body())
-        )
-        async with httpx.AsyncClient() as http:
-            await GrokClient(settings, _StubTokens(), http).complete(
-                TestCase(id="t", messages=[Message(role="user", content="x")])
-            )
-    # respx matches exact URL; if a double slash appeared this would fail.
-    assert route.call_count == 1
-
+# ----------------------------------------------------------------------------
+# 7. Error type contract — tests/observers can rely on these fields.
+# ----------------------------------------------------------------------------
 
 @pytest.mark.asyncio
 async def test_grok_error_fields():

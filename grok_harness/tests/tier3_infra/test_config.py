@@ -1,4 +1,11 @@
-"""Tests for HarnessSettings and env loading."""
+"""Tier 3 (infra) — HarnessSettings, env loading, and TLS context.
+
+Bootstrap concerns. Ordered:
+
+  1. Env loading       defaults, overrides, missing-required errors
+  2. Transport         TLS 1.3 enforcement, no-downgrade, agency CA bundle
+  3. Validation        CA bundle path must exist
+"""
 from __future__ import annotations
 
 import ssl
@@ -7,6 +14,8 @@ from pathlib import Path
 import pytest
 
 from grok_harness.config import HarnessSettings, load_from_env
+
+pytestmark = pytest.mark.infra
 
 
 _BASE_ENV = {
