@@ -1,0 +1,67 @@
+"""Tests for the audit log pipeline."""
+from __future__ import annotations
+
+import hashlib
+import json
+import re
+from pathlib import Path
+
+from grok_harness.audit import configure
+
+
+def _read(path: Path) -> list[dict]:
+    return [json.loads(line) for line in path.read_text().strip().splitlines() if line]
+
+
+def test_audit_redacts_content_by_default(tmp_path: Path):
+    path = tmp_path / "audit.jsonl"
+    log = configure(path, redact_prompts=True)
+    log.info("case.end", case_id="c1", response="secret answer about ORDER-9921")
+
+    rows = _read(path)
+    assert rows[0]["event"] == "case.end"
+    assert "response" not in rows[0]
+    assert (
+        rows[0]["response_sha256"]
+        == hashlib.sha256(b"secret answer about ORDER-9921").hexdigest()
+    )
+    assert rows[0]["response_len"] == len("secret answer about ORDER-9921")
+
+
+def test_audit_preserves_content_when_redaction_disabled(tmp_path: Path):
+    path = tmp_path / "audit.jsonl"
+    log = configure(path, redact_prompts=False)
+    log.info("case.end", case_id="c1", response="full text")
+
+    rows = _read(path)
+    assert rows[0]["response"] == "full text"
+    assert "response_sha256" not in rows[0]
+
+
+def test_audit_emits_iso_utc_timestamp(tmp_path: Path):
+    path = tmp_path / "audit.jsonl"
+    log = configure(path, redact_prompts=True)
+    log.info("suite.start", suite="s")
+
+    ts = _read(path)[0]["timestamp"]
+    # structlog ISO formatter emits trailing "Z" for UTC.
+    assert re.match(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}", ts)
+    assert ts.endswith("Z")
+
+
+def test_audit_appends_across_calls(tmp_path: Path):
+    path = tmp_path / "audit.jsonl"
+    log = configure(path, redact_prompts=True)
+    log.info("a", n=1)
+    log.info("b", n=2)
+    log.info("c", n=3)
+
+    rows = _read(path)
+    assert [r["event"] for r in rows] == ["a", "b", "c"]
+
+
+def test_audit_creates_parent_directory(tmp_path: Path):
+    path = tmp_path / "nested" / "subdir" / "audit.jsonl"
+    assert not path.parent.exists()
+    configure(path, redact_prompts=True)
+    assert path.parent.exists()

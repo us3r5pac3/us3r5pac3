@@ -42,6 +42,8 @@ class TestCase(BaseModel):
 
 
 class TestSuite(BaseModel):
+    __test__ = False  # tell pytest not to collect this as a test class
+
     name: str
     cases: list[TestCase]
 

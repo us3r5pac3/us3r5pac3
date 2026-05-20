@@ -4,9 +4,28 @@ import time
 from dataclasses import dataclass
 
 import httpx
-from tenacity import AsyncRetrying, stop_after_attempt, wait_exponential_jitter
+from tenacity import (
+    AsyncRetrying,
+    retry_if_exception,
+    stop_after_attempt,
+    wait_exponential_jitter,
+)
 
 from .config import HarnessSettings
+
+
+class _AuthRejection(RuntimeError):
+    """Non-retryable auth failure (4xx from the IdP or Azure AD)."""
+
+
+def _is_retryable_auth(exc: BaseException) -> bool:
+    if isinstance(exc, _AuthRejection):
+        return False
+    if isinstance(exc, httpx.HTTPStatusError):
+        return exc.response.status_code >= 500
+    return isinstance(
+        exc, (httpx.TimeoutException, httpx.ConnectError, httpx.RemoteProtocolError)
+    )
 
 
 @dataclass(slots=True)
@@ -105,6 +124,7 @@ class FederatedTokenProvider:
         async for attempt in AsyncRetrying(
             stop=stop_after_attempt(self._s.retry_attempts + 1),
             wait=wait_exponential_jitter(initial=0.5, max=8.0),
+            retry=retry_if_exception(_is_retryable_auth),
             reraise=True,
         ):
             with attempt:
@@ -117,7 +137,9 @@ class FederatedTokenProvider:
                 if resp.status_code >= 500:
                     resp.raise_for_status()
                 if resp.status_code >= 400:
-                    raise RuntimeError(
+                    # Definitive auth rejection: bad assertion, missing scope,
+                    # disabled principal. Retrying won't help.
+                    raise _AuthRejection(
                         f"Auth failure {resp.status_code} at {url}: {resp.text[:512]}"
                     )
                 return resp
