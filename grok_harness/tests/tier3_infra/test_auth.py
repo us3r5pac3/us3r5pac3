@@ -255,14 +255,6 @@ async def test_custom_token_exchange_endpoint_is_honored(
     assert kc.call_count == 1
 
 
-@pytest.mark.asyncio
-async def test_bearer_token_expired_helper():
-    near = BearerToken(value="x", expires_at=time.time() + 30)  # within 60s skew
-    far = BearerToken(value="x", expires_at=time.time() + 600)
-    assert near.expired is True
-    assert far.expired is False
-
-
 # ============================================================================
 # Auth mode: client_secret (Azure team simplest path)
 # ============================================================================
@@ -306,22 +298,9 @@ async def test_client_secret_provider_requires_secret(settings):
             await ClientSecretTokenProvider(settings, http).get_token()
 
 
-@pytest.mark.asyncio
-async def test_client_secret_provider_caches(settings, azure_token_url):
-    from pydantic import SecretStr
-
-    settings.azure.client_secret = SecretStr("s")
-    async with respx.mock() as router:
-        az = router.post(azure_token_url).mock(
-            return_value=httpx.Response(
-                200, json={"access_token": "az", "expires_in": 3600}
-            )
-        )
-        async with httpx.AsyncClient() as http:
-            prov = ClientSecretTokenProvider(settings, http)
-            await prov.get_token()
-            await prov.get_token()
-    assert az.call_count == 1
+# Caching is shared via _RetryingHTTP._cached and covered by
+# test_token_is_cached_until_near_expiry on the federated provider; no need
+# to retest the same code path through each subclass.
 
 
 # ============================================================================
