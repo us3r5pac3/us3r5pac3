@@ -14,6 +14,7 @@ AuthMode = Literal[
     "managed_identity",
     "azure_workload_identity",
     "static_bearer",
+    "api_key",
 ]
 
 
@@ -64,6 +65,11 @@ class AzureSettings(BaseModel):
     static_bearer: SecretStr | None = Field(
         default=None,
         description="Pre-acquired Azure AD bearer (e.g. from `az account get-access-token`).",
+    )
+    api_key: SecretStr | None = Field(
+        default=None,
+        description="API key for a commercial Azure-hosted Grok endpoint "
+        "(Azure AI Foundry MaaS). auth_mode=api_key only. NOT IL5-safe.",
     )
     workload_token_path: Path | None = Field(
         default=None,
@@ -133,6 +139,8 @@ class HarnessSettings(BaseModel):
             raise ValueError(
                 "auth_mode=static_bearer requires GH_AZURE_STATIC_BEARER"
             )
+        if mode == "api_key" and self.azure.api_key is None:
+            raise ValueError("auth_mode=api_key requires GH_AZURE_API_KEY")
         return self
 
     def ssl_context(self) -> ssl.SSLContext:
@@ -199,6 +207,11 @@ def load_from_env() -> HarnessSettings:
         static_bearer=(
             SecretStr(os.environ["GH_AZURE_STATIC_BEARER"])
             if os.environ.get("GH_AZURE_STATIC_BEARER")
+            else None
+        ),
+        api_key=(
+            SecretStr(os.environ["GH_AZURE_API_KEY"])
+            if os.environ.get("GH_AZURE_API_KEY")
             else None
         ),
         workload_token_path=(

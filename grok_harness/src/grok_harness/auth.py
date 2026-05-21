@@ -34,11 +34,19 @@ def _is_retryable_auth(exc: BaseException) -> bool:
 class BearerToken:
     value: str
     expires_at: float  # epoch seconds
+    scheme: str = "Bearer"  # "Bearer" or "api-key"
 
     @property
     def expired(self) -> bool:
         # 60s skew so we never hand out a token about to expire mid-flight.
         return time.time() >= (self.expires_at - 60)
+
+    def apply_to(self, headers: dict[str, str]) -> None:
+        """Render this credential into outgoing request headers."""
+        if self.scheme.lower() == "api-key":
+            headers["api-key"] = self.value
+        else:
+            headers["Authorization"] = f"{self.scheme} {self.value}"
 
 
 class TokenProvider(Protocol):
@@ -333,6 +341,41 @@ class StaticBearerTokenProvider:
 
 
 # ---------------------------------------------------------------------------
+# Auth mode 6 — Plain API key (DEV ONLY; commercial Azure-hosted Grok endpoint)
+# ---------------------------------------------------------------------------
+
+
+class ApiKeyTokenProvider:
+    """Static API key against a commercial Azure-hosted Grok endpoint.
+
+    Use case: the Grok team iterating against an Azure AI Foundry MaaS
+    deployment before the federated path is plumbed. The key is sent as
+    the `api-key` header (Azure OpenAI / Foundry convention), not as a
+    Bearer.
+
+    NOT IL5-compliant. The key lives in env or Key Vault; there is no
+    rotation in-band and no expiry signal. Always pair with
+    GH_ENFORCE_FIPS=false and a commercial-cloud GH_GROK_ENDPOINT.
+    """
+
+    def __init__(self, settings: HarnessSettings, http: httpx.AsyncClient):
+        self._s = settings
+        del http  # protocol parity; no HTTP needed
+
+    async def get_token(self) -> BearerToken:
+        api_key = self._s.azure.api_key
+        if not api_key:
+            raise RuntimeError("auth_mode=api_key requires GH_AZURE_API_KEY")
+        # API keys are long-lived; cache for a day so we don't re-read env
+        # on every call. The client will see 401s if the key is rotated.
+        return BearerToken(
+            value=api_key.get_secret_value(),
+            expires_at=time.time() + 86400,
+            scheme="api-key",
+        )
+
+
+# ---------------------------------------------------------------------------
 # Factory
 # ---------------------------------------------------------------------------
 
@@ -349,4 +392,6 @@ def build_token_provider(settings: HarnessSettings, http: httpx.AsyncClient) -> 
         return AzureWorkloadIdentityTokenProvider(settings, http)
     if mode == "static_bearer":
         return StaticBearerTokenProvider(settings, http)
+    if mode == "api_key":
+        return ApiKeyTokenProvider(settings, http)
     raise ValueError(f"unknown auth_mode: {mode!r}")

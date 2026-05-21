@@ -224,3 +224,24 @@ def test_static_bearer_mode_requires_token(monkeypatch, tmp_path):
     monkeypatch.setenv("GH_AUDIT_LOG_PATH", str(tmp_path / "a.jsonl"))
     with pytest.raises(Exception, match="static_bearer requires"):
         load_from_env()
+
+
+def test_api_key_mode_requires_key(monkeypatch, tmp_path):
+    azure_env = {k: v for k, v in _BASE_ENV.items() if not k.startswith("GH_KEYCLOAK")}
+    _apply_env(monkeypatch, azure_env)
+    monkeypatch.setenv("GH_AUTH_MODE", "api_key")
+    monkeypatch.setenv("GH_AUDIT_LOG_PATH", str(tmp_path / "a.jsonl"))
+    with pytest.raises(Exception, match="api_key requires"):
+        load_from_env()
+
+
+def test_api_key_mode_with_key_loads(monkeypatch, tmp_path):
+    azure_env = {k: v for k, v in _BASE_ENV.items() if not k.startswith("GH_KEYCLOAK")}
+    _apply_env(monkeypatch, azure_env)
+    monkeypatch.setenv("GH_AUTH_MODE", "api_key")
+    monkeypatch.setenv("GH_AZURE_API_KEY", "sk-abc")
+    monkeypatch.setenv("GH_AUDIT_LOG_PATH", str(tmp_path / "a.jsonl"))
+    s = load_from_env()
+    assert s.auth_mode == "api_key"
+    assert s.azure.api_key is not None
+    assert s.azure.api_key.get_secret_value() == "sk-abc"

@@ -26,6 +26,7 @@ import pytest
 import respx
 
 from grok_harness.auth import (
+    ApiKeyTokenProvider,
     AzureWorkloadIdentityTokenProvider,
     BearerToken,
     ClientSecretTokenProvider,
@@ -468,12 +469,64 @@ async def test_static_bearer_requires_value(settings):
 # ============================================================================
 
 
+# ============================================================================
+# Auth mode: api_key (dev-only against a commercial Azure-hosted endpoint)
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_api_key_provider_returns_token_with_apikey_scheme(settings):
+    from pydantic import SecretStr
+
+    settings.azure.api_key = SecretStr("sk-abc123")
+    async with httpx.AsyncClient() as http:
+        tok = await ApiKeyTokenProvider(settings, http).get_token()
+    assert tok.value == "sk-abc123"
+    assert tok.scheme == "api-key"
+    # API keys cache long; no in-band rotation signal.
+    assert not tok.expired
+
+
+@pytest.mark.asyncio
+async def test_api_key_provider_requires_value(settings):
+    settings.azure.api_key = None
+    async with httpx.AsyncClient() as http:
+        with pytest.raises(RuntimeError, match="GH_AZURE_API_KEY"):
+            await ApiKeyTokenProvider(settings, http).get_token()
+
+
+# ============================================================================
+# BearerToken header rendering — Bearer vs api-key
+# ============================================================================
+
+
+def test_bearer_token_applies_authorization_header_by_default():
+    headers: dict[str, str] = {}
+    BearerToken(value="abc", expires_at=time.time() + 600).apply_to(headers)
+    assert headers == {"Authorization": "Bearer abc"}
+
+
+def test_bearer_token_renders_api_key_header_for_apikey_scheme():
+    headers: dict[str, str] = {}
+    BearerToken(value="sk-abc", expires_at=time.time() + 600, scheme="api-key").apply_to(
+        headers
+    )
+    assert headers == {"api-key": "sk-abc"}
+    assert "Authorization" not in headers
+
+
+# ============================================================================
+# Factory dispatch
+# ============================================================================
+
+
 @pytest.mark.asyncio
 async def test_build_token_provider_dispatches_each_mode(settings):
     from pydantic import SecretStr
 
     settings.azure.client_secret = SecretStr("s")
     settings.azure.static_bearer = SecretStr("b")
+    settings.azure.api_key = SecretStr("k")
 
     async with httpx.AsyncClient() as http:
         settings.auth_mode = "keycloak_federated"
@@ -490,6 +543,8 @@ async def test_build_token_provider_dispatches_each_mode(settings):
         )
         settings.auth_mode = "static_bearer"
         assert isinstance(build_token_provider(settings, http), StaticBearerTokenProvider)
+        settings.auth_mode = "api_key"
+        assert isinstance(build_token_provider(settings, http), ApiKeyTokenProvider)
 
 
 @pytest.mark.asyncio

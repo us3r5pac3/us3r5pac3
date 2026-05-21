@@ -8,7 +8,8 @@ Without this round-trip there is nothing to assert against. Ordered:
   4. Wire correctness          URL construction (no double slash)
   5. Transient failures        429 retry, 503 exhaust
   6. Definitive failures       401 not retried, 400 content_filter body kept
-  7. Error type contract       GrokError carries status / body / request id
+  7. Credential rendering      Bearer vs api-key header dispatch
+  8. Error type contract       GrokError carries status / body / request id
 
 Wire shape conforms to Azure OpenAI Service "Chat completions" REST:
 - POST /openai/deployments/{deployment}/chat/completions?api-version=...
@@ -245,7 +246,41 @@ async def test_400_content_filter_carries_body(settings, grok_completions_url):
 
 
 # ----------------------------------------------------------------------------
-# 7. Error type contract — tests/observers can rely on these fields.
+# 7. Credential rendering — Bearer vs api-key are header-distinct.
+# ----------------------------------------------------------------------------
+
+
+class _ApiKeyStub(FederatedTokenProvider):
+    """Token provider that hands back an api-key credential (dev-only path)."""
+
+    def __init__(self, value: str = "sk-test"):
+        self._v = value
+
+    async def get_token(self) -> BearerToken:
+        return BearerToken(value=self._v, expires_at=time.time() + 3600, scheme="api-key")
+
+
+@pytest.mark.asyncio
+async def test_api_key_mode_uses_apikey_header_not_authorization(
+    settings, grok_completions_url
+):
+    """Azure OpenAI / Foundry expects `api-key: <value>`, not Bearer."""
+    async with respx.mock(assert_all_called=True) as router:
+        route = router.post(grok_completions_url).mock(
+            return_value=httpx.Response(200, json=_ok_body())
+        )
+        async with httpx.AsyncClient() as http:
+            await GrokClient(settings, _ApiKeyStub("sk-abc123"), http).complete(
+                TestCase(id="t", messages=[Message(role="user", content="x")])
+            )
+
+    sent_headers = route.calls[0].request.headers
+    assert sent_headers["api-key"] == "sk-abc123"
+    assert "Authorization" not in sent_headers
+
+
+# ----------------------------------------------------------------------------
+# 8. Error type contract — tests/observers can rely on these fields.
 # ----------------------------------------------------------------------------
 
 @pytest.mark.asyncio

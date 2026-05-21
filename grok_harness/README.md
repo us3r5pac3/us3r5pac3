@@ -30,7 +30,8 @@ the one that matches where the harness is running.
 | `client_secret` | Azure team dev/CI: simplest path inside Azure | `GH_AZURE_CLIENT_SECRET` (source from Key Vault) |
 | `managed_identity` | Azure VM / App Service / Container Instances / legacy AKS | nothing extra (system-assigned), or `GH_AZURE_MANAGED_IDENTITY_CLIENT_ID` for user-assigned |
 | `azure_workload_identity` | Modern AKS with the `azwi` mutating webhook | `GH_AZURE_WORKLOAD_TOKEN_PATH` (defaults to `/var/run/secrets/azure/tokens/azure-identity-token`) |
-| `static_bearer` | Interactive dev / scripted CI with a pre-fetched token | `GH_AZURE_STATIC_BEARER` from e.g. `az account get-access-token --resource api://grok-prod` |
+| `static_bearer` | Interactive dev / scripted CI with a pre-fetched Azure AD token | `GH_AZURE_STATIC_BEARER` from e.g. `az account get-access-token --resource api://grok-prod` |
+| `api_key` | **Dev only**: plain API key against a commercial Azure-hosted Grok endpoint (e.g. Azure AI Foundry MaaS). NOT IL5-safe. | `GH_AZURE_API_KEY` |
 
 In every mode the harness ends up with an Azure AD bearer scoped to
 `GH_AZURE_RESOURCE_SCOPE` and attaches it to OpenAI-compatible chat
@@ -106,6 +107,33 @@ $ grok-harness run examples/prompts.yaml
 ```
 
 The harness uses the token until Azure rejects it, then fails.
+
+**`api_key`** — dev-only path for a commercial Azure-hosted endpoint:
+
+```
+harness -> Grok (POST /openai/deployments/.../chat/completions,
+                 header api-key: <vendor key>)
+```
+
+The key is sent as the Azure OpenAI / Foundry `api-key` header (not
+Bearer). Use this when iterating against a commercial Azure AI Foundry
+MaaS deployment of Grok before the federated path is plumbed:
+
+```bash
+export GH_AUTH_MODE=api_key
+export GH_AZURE_API_KEY=...                                 # from the deployment portal
+export GH_AZURE_AUTHORITY=https://login.microsoftonline.com  # commercial cloud
+export GH_GROK_ENDPOINT='https://<your-commercial-deployment>.inference.ml.azure.com'
+export GH_GROK_DEPLOYMENT=grok-4.3
+export GH_ENFORCE_FIPS=false                                # not in IL5
+grok-harness run examples/prompts.yaml
+```
+
+`GH_AZURE_TENANT_ID` and `GH_AZURE_CLIENT_ID` still need values for
+pydantic to construct the settings object, but they're unused in this
+mode — set them to any non-empty placeholder. **Do not use this mode in
+production**: the key lives in env, never rotates in-band, and bypasses
+the IL5 boundary.
 
 ## Quick start
 

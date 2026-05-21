@@ -70,10 +70,10 @@ class GrokClient:
             with attempt:
                 token = await self._tokens.get_token()
                 headers = {
-                    "Authorization": f"Bearer {token.value}",
                     "Content-Type": "application/json",
                     "x-ms-client-request-id": client_request_id,
                 }
+                token.apply_to(headers)
                 start = time.perf_counter()
                 resp = await self._http.post(
                     url, json=body, headers=headers, timeout=self._s.request_timeout_s
