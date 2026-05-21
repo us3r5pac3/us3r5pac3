@@ -77,3 +77,27 @@ def test_audit_creates_parent_directory(tmp_path: Path):
     assert not path.parent.exists()
     configure(path, redact_prompts=True)
     assert path.parent.exists()
+
+
+def test_audit_redact_fields_is_configurable(tmp_path: Path):
+    """Custom redact set hashes additional fields and skips defaults not listed."""
+    path = tmp_path / "audit.jsonl"
+    log = configure(
+        path,
+        redact_prompts=True,
+        redact_fields=("cui_payload", "internal_notes"),
+    )
+    log.info(
+        "case.end",
+        case_id="c1",
+        response="this is the response",     # not in custom set -> kept as-is
+        cui_payload="ORDER-9921-ALPHA",      # in custom set -> hashed
+        internal_notes="agent's reasoning",  # in custom set -> hashed
+    )
+
+    rows = _read(path)
+    row = rows[0]
+    assert row["response"] == "this is the response"
+    assert "cui_payload" not in row
+    assert "cui_payload_sha256" in row
+    assert "internal_notes_sha256" in row

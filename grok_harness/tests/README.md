@@ -42,13 +42,40 @@ prompt testing is about.
 | `test_config.py`  | env loading, TLS 1.3 enforcement, agency CA bundle              |
 | `test_audit.py`   | append-only JSONL, SHA-256 redaction, ISO UTC timestamps        |
 
+## Tier 4 — `live/` — opt-in, hits real services
+
+A small smoke suite that exercises the real Keycloak / Azure AD / Grok
+4.3 endpoints described by whatever auth mode is configured in the
+environment. Skipped by default; opt in via `GH_LIVE=1`.
+
+| file              | what it covers                                            |
+| ----------------- | --------------------------------------------------------- |
+| `test_smoke.py`   | one auth round-trip + one prompt round-trip per run       |
+
+These don't check correctness — they confirm wire-shape *acceptance* by
+the real services, which mocks can't prove. Run after a federation or
+deploy change as a one-shot acceptance test:
+
+```bash
+# IL5 production (auth env from your real deployment)
+GH_LIVE=1 pytest tests/live -v
+
+# Grok team validation against a non-prod Azure deployment
+GH_AUTH_MODE=client_secret \
+  GH_AZURE_CLIENT_SECRET=$(read-from-kv) \
+  ... \
+  GH_LIVE=1 pytest tests/live -v
+```
+
 ## Running subsets
 
 ```bash
 pytest -m core            # just the prompt-testing loop
 pytest -m "core or io"    # core + suite I/O
 pytest -m infra           # only the infrastructure plumbing
+pytest -m live            # only live smoke (also needs GH_LIVE=1)
 pytest tests/tier1_core   # equivalent path-based selection
+pytest                    # all non-live tiers (live is skipped without GH_LIVE)
 ```
 
 ## Shared fixtures

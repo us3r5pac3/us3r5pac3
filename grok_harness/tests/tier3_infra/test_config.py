@@ -285,3 +285,106 @@ def test_token_lifecycle_defaults_are_safe(monkeypatch, tmp_path):
     assert s.imds_api_version == "2018-02-01"
     assert s.backoff_initial_s == 0.5
     assert s.backoff_max_s == 8.0
+
+
+# ----------------------------------------------------------------------------
+# Behavioral knobs — retry statuses, refusal patterns, audit redaction,
+# Grok URL template. All have safe defaults but must be overridable.
+# ----------------------------------------------------------------------------
+
+
+def test_retry_statuses_default_matches_prior_hardcoded_set(monkeypatch, tmp_path):
+    _apply_env(monkeypatch, _BASE_ENV)
+    monkeypatch.setenv("GH_AUDIT_LOG_PATH", str(tmp_path / "a.jsonl"))
+    s = load_from_env()
+    assert s.retry_statuses == (408, 429, 500, 502, 503, 504)
+
+
+def test_retry_statuses_can_be_overridden(monkeypatch, tmp_path):
+    _apply_env(monkeypatch, _BASE_ENV)
+    monkeypatch.setenv("GH_AUDIT_LOG_PATH", str(tmp_path / "a.jsonl"))
+    monkeypatch.setenv("GH_RETRY_STATUSES", "429,503")
+    s = load_from_env()
+    assert s.retry_statuses == (429, 503)
+
+
+def test_retry_statuses_can_be_empty(monkeypatch, tmp_path):
+    """Empty set disables status-based retry (transient network errors still retry)."""
+    _apply_env(monkeypatch, _BASE_ENV)
+    monkeypatch.setenv("GH_AUDIT_LOG_PATH", str(tmp_path / "a.jsonl"))
+    monkeypatch.setenv("GH_RETRY_STATUSES", "")
+    s = load_from_env()
+    assert s.retry_statuses == ()
+
+
+def test_refusal_patterns_default_set_loads(monkeypatch, tmp_path):
+    _apply_env(monkeypatch, _BASE_ENV)
+    monkeypatch.setenv("GH_AUDIT_LOG_PATH", str(tmp_path / "a.jsonl"))
+    s = load_from_env()
+    # Three default patterns (cannot/won't, unable to, policy citation).
+    assert len(s.refusal_patterns) == 3
+
+
+def test_refusal_patterns_load_from_file(monkeypatch, tmp_path):
+    patterns_file = tmp_path / "refusal.txt"
+    patterns_file.write_text(
+        "# Custom patterns for our deployment\n"
+        r"\bsorry,? I cannot\b" + "\n"
+        "\n"  # blank line should be ignored
+        r"\bI must decline\b" + "\n"
+    )
+    _apply_env(monkeypatch, _BASE_ENV)
+    monkeypatch.setenv("GH_AUDIT_LOG_PATH", str(tmp_path / "a.jsonl"))
+    monkeypatch.setenv("GH_REFUSAL_PATTERNS_FILE", str(patterns_file))
+    s = load_from_env()
+    assert s.refusal_patterns == (r"\bsorry,? I cannot\b", r"\bI must decline\b")
+
+
+def test_refusal_patterns_file_must_contain_patterns(monkeypatch, tmp_path):
+    empty_file = tmp_path / "empty.txt"
+    empty_file.write_text("# only comments\n\n")
+    _apply_env(monkeypatch, _BASE_ENV)
+    monkeypatch.setenv("GH_AUDIT_LOG_PATH", str(tmp_path / "a.jsonl"))
+    monkeypatch.setenv("GH_REFUSAL_PATTERNS_FILE", str(empty_file))
+    with pytest.raises(RuntimeError, match="contained no patterns"):
+        load_from_env()
+
+
+def test_audit_redact_fields_default(monkeypatch, tmp_path):
+    _apply_env(monkeypatch, _BASE_ENV)
+    monkeypatch.setenv("GH_AUDIT_LOG_PATH", str(tmp_path / "a.jsonl"))
+    s = load_from_env()
+    assert s.audit_redact_fields == ("prompt", "response", "content", "messages")
+
+
+def test_audit_redact_fields_can_be_extended(monkeypatch, tmp_path):
+    _apply_env(monkeypatch, _BASE_ENV)
+    monkeypatch.setenv("GH_AUDIT_LOG_PATH", str(tmp_path / "a.jsonl"))
+    monkeypatch.setenv(
+        "GH_AUDIT_REDACT_FIELDS",
+        "prompt,response,content,messages,internal_notes,cui_payload",
+    )
+    s = load_from_env()
+    assert "internal_notes" in s.audit_redact_fields
+    assert "cui_payload" in s.audit_redact_fields
+
+
+def test_grok_url_template_default(monkeypatch, tmp_path):
+    """Out of the box the URL template is the Azure OpenAI shape."""
+    _apply_env(monkeypatch, _BASE_ENV)
+    monkeypatch.setenv("GH_AUDIT_LOG_PATH", str(tmp_path / "a.jsonl"))
+    s = load_from_env()
+    assert "/openai/deployments/{deployment}/chat/completions" in s.azure.url_template
+    assert "{api_version}" in s.azure.url_template
+
+
+def test_grok_url_template_can_be_overridden(monkeypatch, tmp_path):
+    """Azure AI Foundry serverless MaaS uses a different path shape."""
+    _apply_env(monkeypatch, _BASE_ENV)
+    monkeypatch.setenv("GH_AUDIT_LOG_PATH", str(tmp_path / "a.jsonl"))
+    monkeypatch.setenv(
+        "GH_GROK_URL_TEMPLATE",
+        "{endpoint}/v1/chat/completions",
+    )
+    s = load_from_env()
+    assert s.azure.url_template == "{endpoint}/v1/chat/completions"

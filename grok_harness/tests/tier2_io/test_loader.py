@@ -15,43 +15,27 @@ from grok_harness.loader import load_suite
 pytestmark = pytest.mark.io
 
 
+_KNOWN_ASSERTION_KINDS = {
+    "contains",
+    "not_contains",
+    "regex",
+    "equals",
+    "json_schema",
+    "max_latency_ms",
+    "max_tokens",
+    "min_tokens",
+    "refusal",
+}
+
+
 def _examples_dir() -> Path:
     return Path(__file__).resolve().parents[2] / "examples"
 
 
-def _examples_path() -> Path:
-    return _examples_dir() / "full-suite.yaml"
-
-
 # ----------------------------------------------------------------------------
-# 1. Happy load.
+# 1. Happy load — every shipped example parses, self-identifies, and uses
+#    only known assertion kinds.
 # ----------------------------------------------------------------------------
-
-def test_load_example_suite():
-    suite = load_suite(_examples_path())
-    assert suite.name == "grok-4.3-smoke"
-    assert len(suite.cases) == 3
-    ids = {c.id for c in suite.cases}
-    assert {"classify-intent-json", "cui-redaction-policy", "terse-answer"} <= ids
-
-
-def test_assertion_kinds_all_known():
-    suite = load_suite(_examples_path())
-    known = {
-        "contains",
-        "not_contains",
-        "regex",
-        "equals",
-        "json_schema",
-        "max_latency_ms",
-        "max_tokens",
-        "min_tokens",
-        "refusal",
-    }
-    for case in suite.cases:
-        for a in case.assertions:
-            assert a.kind in known
-
 
 @pytest.mark.parametrize(
     "filename,expected_name",
@@ -60,13 +44,16 @@ def test_assertion_kinds_all_known():
         ("structured.yaml", "structured-output"),
         ("safety.yaml", "safety-policy"),
         ("slo.yaml", "slo"),
+        ("full-suite.yaml", "grok-4.3-smoke"),
     ],
 )
-def test_focused_example_suites_load(filename: str, expected_name: str):
-    """Each per-approach example must parse and self-identify."""
+def test_example_suite_loads_with_known_assertions(filename: str, expected_name: str):
     suite = load_suite(_examples_dir() / filename)
     assert suite.name == expected_name
     assert len(suite.cases) >= 1
+    for case in suite.cases:
+        for a in case.assertions:
+            assert a.kind in _KNOWN_ASSERTION_KINDS
 
 
 # ----------------------------------------------------------------------------

@@ -40,6 +40,7 @@ markers = [
     "core: the prompt-testing loop itself — assertion logic, prompt -> response client, suite runner",
     "io: how prompts are authored and results are consumed — YAML loader, reporters, CLI",
     "infra: identity federation, transport/config, audit logging — required to operate, not what is under test",
+    "live: hits real services; opt-in via GH_LIVE=1, skipped by default",
 ]
 
 [tool.ruff]
