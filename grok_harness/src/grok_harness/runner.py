@@ -6,7 +6,7 @@ import uuid
 import httpx
 import structlog
 
-from .auth import FederatedTokenProvider
+from .auth import build_token_provider
 from .client import GrokClient, GrokError
 from .config import HarnessSettings
 from .evaluators import evaluate
@@ -27,6 +27,7 @@ class SuiteRunner:
             cases=len(suite.cases),
             endpoint=str(self._s.azure.endpoint),
             deployment=self._s.azure.deployment,
+            auth_mode=self._s.auth_mode,
         )
 
         sem = asyncio.Semaphore(self._s.max_concurrency)
@@ -35,7 +36,7 @@ class SuiteRunner:
             verify=self._s.ssl_context(),
         )
         async with httpx.AsyncClient(transport=transport) as http:
-            tokens = FederatedTokenProvider(self._s, http)
+            tokens = build_token_provider(self._s, http)
             client = GrokClient(self._s, tokens, http)
 
             async def _one(case: TestCase) -> CaseOutcome:

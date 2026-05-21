@@ -19,7 +19,27 @@ Results are emitted as console summary, JSON, and JUnit XML (for CI pipelines
 inside the ATO boundary). Every request and response is captured to an
 append-only JSONL audit log with prompts/responses SHA-256 hashed by default.
 
-## Identity & request flow (IL5)
+## Auth modes
+
+The harness supports five auth modes, selected with `GH_AUTH_MODE`. Pick
+the one that matches where the harness is running.
+
+| `GH_AUTH_MODE` | When to use | What you supply |
+| --- | --- | --- |
+| `keycloak_federated` *(default)* | IL5 production: GCP/GKE pod calling Azure Gov | Keycloak issuer + client ID; projected K8s SA token at the workload-token path |
+| `client_secret` | Azure team dev/CI: simplest path inside Azure | `GH_AZURE_CLIENT_SECRET` (source from Key Vault) |
+| `managed_identity` | Azure VM / App Service / Container Instances / legacy AKS | nothing extra (system-assigned), or `GH_AZURE_MANAGED_IDENTITY_CLIENT_ID` for user-assigned |
+| `azure_workload_identity` | Modern AKS with the `azwi` mutating webhook | `GH_AZURE_WORKLOAD_TOKEN_PATH` (defaults to `/var/run/secrets/azure/tokens/azure-identity-token`) |
+| `static_bearer` | Interactive dev / scripted CI with a pre-fetched token | `GH_AZURE_STATIC_BEARER` from e.g. `az account get-access-token --resource api://grok-prod` |
+
+In every mode the harness ends up with an Azure AD bearer scoped to
+`GH_AZURE_RESOURCE_SCOPE` and attaches it to OpenAI-compatible chat
+completions calls. The token is cached until ~60s before expiry; auth
+retries use exponential backoff with jitter.
+
+### Identity flow per mode
+
+**`keycloak_federated`** — the original IL5 GCP path:
 
 ```
 +---------------------------+        +-------------------+        +-------------------------+
@@ -31,25 +51,61 @@ append-only JSONL audit log with prompts/responses SHA-256 hashed by default.
                                                                             v
                                                               +-------------------------------+
                                                               |  Grok 4.3 (Azure Gov MaaS)    |
-                                                              |  /openai/deployments/.../...  |
                                                               +-------------------------------+
 ```
 
-1. The GKE pod's projected service-account token is sent to Keycloak's
-   `/token` endpoint as `subject_token` for a token exchange (RFC 8693).
+1. Pod's projected SA token is sent to Keycloak as `subject_token` (RFC 8693).
    Keycloak returns a JWT whose `aud` is `api://AzureADTokenExchange`.
-2. The harness POSTs that JWT to Azure AD (Gov authority
-   `login.microsoftonline.us`) as `client_assertion` with
-   `grant_type=client_credentials` and the Grok resource scope. Azure
-   validates the assertion via the App Registration's federated credential
-   (Keycloak's JWKS is the trusted issuer) and returns a bearer.
-3. The bearer is attached to OpenAI-compatible chat-completions calls
-   against the Grok deployment. The token is cached until ~60s before
-   expiry; auth retries use exponential backoff with jitter.
+2. That JWT is POSTed to Azure AD as `client_assertion` with
+   `grant_type=client_credentials`. Azure validates against the App
+   Registration's federated credential (Keycloak's JWKS is the trusted
+   issuer) and returns a bearer.
 
-No long-lived secrets are stored, env-injected, or read from disk. The only
-credential material is the projected SA token, which is rotated by the
-control plane.
+No long-lived secrets touch disk; the SA token is rotated by the kubelet.
+
+**`client_secret`** — simplest for the Grok team running inside Azure:
+
+```
+harness -> Azure AD (POST .../oauth2/v2.0/token,
+                     grant_type=client_credentials,
+                     client_id, client_secret, scope)
+        -> Grok 4.3
+```
+
+NOT IL5-compliant; the secret lives in env/Key Vault. Use for the team's
+validation runs only.
+
+**`managed_identity`** — Azure VM/App Service/legacy AKS:
+
+```
+harness -> IMDS (GET 169.254.169.254/metadata/identity/oauth2/token
+                 ?resource=api://grok-prod, header Metadata: true)
+        -> Grok 4.3
+```
+
+No secrets. The host's assigned identity is the credential.
+
+**`azure_workload_identity`** — modern AKS:
+
+```
+harness -> read /var/run/secrets/azure/tokens/azure-identity-token (issued by AKS)
+        -> Azure AD (POST .../oauth2/v2.0/token,
+                     client_assertion=<projected token>)
+        -> Grok 4.3
+```
+
+Same shape as `keycloak_federated` but with Azure issuing the projected
+token directly — no Keycloak in the middle.
+
+**`static_bearer`** — pre-fetched token for ad-hoc runs:
+
+```
+$ export GH_AZURE_STATIC_BEARER=$(az account get-access-token \
+    --resource api://grok-prod --query accessToken -o tsv)
+$ grok-harness run examples/prompts.yaml
+```
+
+The harness uses the token until Azure rejects it, then fails.
 
 ## Quick start
 
@@ -58,7 +114,7 @@ cd grok_harness
 python -m venv .venv && . .venv/bin/activate
 pip install -e .[dev]
 
-cp examples/.env.example .env  # then edit for your tenant
+cp examples/.env.example .env  # then edit for your tenant + chosen auth mode
 set -a && . ./.env && set +a
 
 grok-harness run examples/prompts.yaml \
@@ -68,6 +124,24 @@ grok-harness run examples/prompts.yaml \
 
 Exit code is non-zero if any case fails. Use `--fail-fast` to surface the
 failed count as the exit code (useful for partial-credit gates in CI).
+
+### For the Grok team running inside Azure
+
+The fastest path is `client_secret`:
+
+```bash
+export GH_AUTH_MODE=client_secret
+export GH_AZURE_TENANT_ID=...
+export GH_AZURE_CLIENT_ID=...               # service principal app ID
+export GH_AZURE_CLIENT_SECRET=...           # source from Key Vault
+export GH_AZURE_RESOURCE_SCOPE='api://grok-prod/.default'
+export GH_GROK_ENDPOINT='https://<your-deployment>.inference.ml.azure.com'
+export GH_ENFORCE_FIPS=false                # not running in IL5
+grok-harness run examples/prompts.yaml
+```
+
+For pipelines running in AKS, prefer `azure_workload_identity` so no
+secret ever lives in env.
 
 ## Authoring suites
 

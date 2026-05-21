@@ -6,7 +6,7 @@ import uuid
 import httpx
 from tenacity import AsyncRetrying, retry_if_exception, stop_after_attempt, wait_exponential_jitter
 
-from .auth import FederatedTokenProvider
+from .auth import TokenProvider
 from .config import HarnessSettings
 from .models import CompletionResult, TestCase
 
@@ -36,7 +36,7 @@ class GrokClient:
     def __init__(
         self,
         settings: HarnessSettings,
-        tokens: FederatedTokenProvider,
+        tokens: TokenProvider,
         http: httpx.AsyncClient,
     ):
         self._s = settings

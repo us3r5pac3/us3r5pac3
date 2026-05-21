@@ -156,3 +156,71 @@ def test_ssl_context_uses_provided_ca_bundle(tmp_path: Path, settings):
         else False
         for entry in ctx.get_ca_certs()
     )
+
+
+# ----------------------------------------------------------------------------
+# Auth-mode validation — fields required for the chosen mode must be present.
+# ----------------------------------------------------------------------------
+
+
+def test_keycloak_mode_requires_keycloak_settings(monkeypatch, tmp_path):
+    _apply_env(monkeypatch, _BASE_ENV)
+    monkeypatch.delenv("GH_KEYCLOAK_ISSUER", raising=False)
+    monkeypatch.delenv("GH_KEYCLOAK_CLIENT_ID", raising=False)
+    monkeypatch.setenv("GH_AUTH_MODE", "keycloak_federated")
+    monkeypatch.setenv("GH_AUDIT_LOG_PATH", str(tmp_path / "a.jsonl"))
+    with pytest.raises(Exception, match="keycloak_federated requires"):
+        load_from_env()
+
+
+def test_client_secret_mode_requires_secret(monkeypatch, tmp_path):
+    # Azure-only env (no Keycloak required).
+    azure_env = {k: v for k, v in _BASE_ENV.items() if not k.startswith("GH_KEYCLOAK")}
+    _apply_env(monkeypatch, azure_env)
+    monkeypatch.setenv("GH_AUTH_MODE", "client_secret")
+    monkeypatch.setenv("GH_AUDIT_LOG_PATH", str(tmp_path / "a.jsonl"))
+    with pytest.raises(Exception, match="client_secret requires"):
+        load_from_env()
+
+
+def test_client_secret_mode_with_secret_loads(monkeypatch, tmp_path):
+    azure_env = {k: v for k, v in _BASE_ENV.items() if not k.startswith("GH_KEYCLOAK")}
+    _apply_env(monkeypatch, azure_env)
+    monkeypatch.setenv("GH_AUTH_MODE", "client_secret")
+    monkeypatch.setenv("GH_AZURE_CLIENT_SECRET", "shh")
+    monkeypatch.setenv("GH_AUDIT_LOG_PATH", str(tmp_path / "a.jsonl"))
+    s = load_from_env()
+    assert s.auth_mode == "client_secret"
+    assert s.azure.client_secret is not None
+    assert s.azure.client_secret.get_secret_value() == "shh"
+    assert s.keycloak is None
+
+
+def test_managed_identity_mode_needs_no_secrets(monkeypatch, tmp_path):
+    azure_env = {k: v for k, v in _BASE_ENV.items() if not k.startswith("GH_KEYCLOAK")}
+    _apply_env(monkeypatch, azure_env)
+    monkeypatch.setenv("GH_AUTH_MODE", "managed_identity")
+    monkeypatch.setenv("GH_AUDIT_LOG_PATH", str(tmp_path / "a.jsonl"))
+    s = load_from_env()
+    assert s.auth_mode == "managed_identity"
+    assert s.azure.client_secret is None
+
+
+def test_workload_identity_mode_picks_up_token_path(monkeypatch, tmp_path):
+    azure_env = {k: v for k, v in _BASE_ENV.items() if not k.startswith("GH_KEYCLOAK")}
+    _apply_env(monkeypatch, azure_env)
+    monkeypatch.setenv("GH_AUTH_MODE", "azure_workload_identity")
+    monkeypatch.setenv("GH_AZURE_WORKLOAD_TOKEN_PATH", "/var/run/secrets/azure/tokens/azure-identity-token")
+    monkeypatch.setenv("GH_AUDIT_LOG_PATH", str(tmp_path / "a.jsonl"))
+    s = load_from_env()
+    assert s.auth_mode == "azure_workload_identity"
+    assert s.azure.workload_token_path == Path("/var/run/secrets/azure/tokens/azure-identity-token")
+
+
+def test_static_bearer_mode_requires_token(monkeypatch, tmp_path):
+    azure_env = {k: v for k, v in _BASE_ENV.items() if not k.startswith("GH_KEYCLOAK")}
+    _apply_env(monkeypatch, azure_env)
+    monkeypatch.setenv("GH_AUTH_MODE", "static_bearer")
+    monkeypatch.setenv("GH_AUDIT_LOG_PATH", str(tmp_path / "a.jsonl"))
+    with pytest.raises(Exception, match="static_bearer requires"):
+        load_from_env()
