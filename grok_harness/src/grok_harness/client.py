@@ -63,7 +63,10 @@ class GrokClient:
 
         async for attempt in AsyncRetrying(
             stop=stop_after_attempt(self._s.retry_attempts + 1),
-            wait=wait_exponential_jitter(initial=0.5, max=8.0),
+            wait=wait_exponential_jitter(
+                initial=self._s.backoff_initial_s,
+                max=self._s.backoff_max_s,
+            ),
             retry=retry_if_exception(_is_retryable),
             reraise=True,
         ):

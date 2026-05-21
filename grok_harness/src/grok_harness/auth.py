@@ -35,11 +35,13 @@ class BearerToken:
     value: str
     expires_at: float  # epoch seconds
     scheme: str = "Bearer"  # "Bearer" or "api-key"
+    expiry_skew_s: float = 60.0
 
     @property
     def expired(self) -> bool:
-        # 60s skew so we never hand out a token about to expire mid-flight.
-        return time.time() >= (self.expires_at - 60)
+        # Treat the token as expired this many seconds early so a request
+        # in flight never carries a token that's about to die server-side.
+        return time.time() >= (self.expires_at - self.expiry_skew_s)
 
     def apply_to(self, headers: dict[str, str]) -> None:
         """Render this credential into outgoing request headers."""
@@ -79,7 +81,10 @@ class _RetryingHTTP:
     ) -> httpx.Response:
         async for attempt in AsyncRetrying(
             stop=stop_after_attempt(self._s.retry_attempts + 1),
-            wait=wait_exponential_jitter(initial=0.5, max=8.0),
+            wait=wait_exponential_jitter(
+                initial=self._s.backoff_initial_s,
+                max=self._s.backoff_max_s,
+            ),
             retry=retry_if_exception(_is_retryable_auth),
             reraise=True,
         ):
@@ -179,7 +184,11 @@ class FederatedTokenProvider(_RetryingHTTP):
         expires_in = int(payload.get("expires_in", 0))
         if not token or expires_in <= 0:
             raise RuntimeError(f"Azure AD token response missing fields: {payload}")
-        return BearerToken(value=token, expires_at=time.time() + expires_in)
+        return BearerToken(
+            value=token,
+            expires_at=time.time() + expires_in,
+            expiry_skew_s=self._s.token_expiry_skew_s,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -214,7 +223,11 @@ class ClientSecretTokenProvider(_RetryingHTTP):
         expires_in = int(payload.get("expires_in", 0))
         if not token or expires_in <= 0:
             raise RuntimeError(f"Azure AD token response missing fields: {payload}")
-        self._cached = BearerToken(value=token, expires_at=time.time() + expires_in)
+        self._cached = BearerToken(
+            value=token,
+            expires_at=time.time() + expires_in,
+            expiry_skew_s=self._s.token_expiry_skew_s,
+        )
         return self._cached
 
 
@@ -233,13 +246,12 @@ class ManagedIdentityTokenProvider(_RetryingHTTP):
     """
 
     IMDS_ENDPOINT = "http://169.254.169.254/metadata/identity/oauth2/token"
-    IMDS_API_VERSION = "2018-02-01"
 
     async def get_token(self) -> BearerToken:
         if self._cached and not self._cached.expired:
             return self._cached
         params = {
-            "api-version": self.IMDS_API_VERSION,
+            "api-version": self._s.imds_api_version,
             "resource": _resource_uri(self._s.azure.resource_scope),
         }
         if self._s.azure.managed_identity_client_id:
@@ -262,7 +274,11 @@ class ManagedIdentityTokenProvider(_RetryingHTTP):
             expires_at = float(expires_in)
         else:
             expires_at = now + expires_in
-        self._cached = BearerToken(value=token, expires_at=expires_at)
+        self._cached = BearerToken(
+            value=token,
+            expires_at=expires_at,
+            expiry_skew_s=self._s.token_expiry_skew_s,
+        )
         return self._cached
 
 
@@ -308,7 +324,11 @@ class AzureWorkloadIdentityTokenProvider(_RetryingHTTP):
         expires_in = int(payload.get("expires_in", 0))
         if not token or expires_in <= 0:
             raise RuntimeError(f"Azure AD token response missing fields: {payload}")
-        self._cached = BearerToken(value=token, expires_at=time.time() + expires_in)
+        self._cached = BearerToken(
+            value=token,
+            expires_at=time.time() + expires_in,
+            expiry_skew_s=self._s.token_expiry_skew_s,
+        )
         return self._cached
 
 
@@ -335,9 +355,14 @@ class StaticBearerTokenProvider:
             raise RuntimeError(
                 "auth_mode=static_bearer requires GH_AZURE_STATIC_BEARER"
             )
-        # 10-minute optimistic window; the harness will see 401s and fail
-        # if the operator's token has already expired.
-        return BearerToken(value=bearer.get_secret_value(), expires_at=time.time() + 600)
+        # Optimistic validity window; configurable via GH_STATIC_BEARER_TTL_S.
+        # The client will see 401s and fail if the operator's token has
+        # already expired.
+        return BearerToken(
+            value=bearer.get_secret_value(),
+            expires_at=time.time() + self._s.static_bearer_ttl_s,
+            expiry_skew_s=self._s.token_expiry_skew_s,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -366,12 +391,13 @@ class ApiKeyTokenProvider:
         api_key = self._s.azure.api_key
         if not api_key:
             raise RuntimeError("auth_mode=api_key requires GH_AZURE_API_KEY")
-        # API keys are long-lived; cache for a day so we don't re-read env
-        # on every call. The client will see 401s if the key is rotated.
+        # Cache TTL is configurable via GH_API_KEY_TTL_S; API keys are
+        # long-lived and the client sees 401 if rotated server-side.
         return BearerToken(
             value=api_key.get_secret_value(),
-            expires_at=time.time() + 86400,
+            expires_at=time.time() + self._s.api_key_ttl_s,
             scheme="api-key",
+            expiry_skew_s=self._s.token_expiry_skew_s,
         )
 
 

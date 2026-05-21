@@ -245,3 +245,43 @@ def test_api_key_mode_with_key_loads(monkeypatch, tmp_path):
     assert s.auth_mode == "api_key"
     assert s.azure.api_key is not None
     assert s.azure.api_key.get_secret_value() == "sk-abc"
+
+
+# ----------------------------------------------------------------------------
+# Cross-cutting parameter env vars — make sure each one threads through.
+# ----------------------------------------------------------------------------
+
+
+def test_token_lifecycle_knobs_loaded_from_env(monkeypatch, tmp_path):
+    _apply_env(monkeypatch, _BASE_ENV)
+    monkeypatch.setenv("GH_AUDIT_LOG_PATH", str(tmp_path / "a.jsonl"))
+    monkeypatch.setenv("GH_TOKEN_EXPIRY_SKEW_S", "120")
+    monkeypatch.setenv("GH_STATIC_BEARER_TTL_S", "1200")
+    monkeypatch.setenv("GH_API_KEY_TTL_S", "3600")
+    monkeypatch.setenv("GH_IMDS_API_VERSION", "2019-08-01")
+    monkeypatch.setenv("GH_BACKOFF_INITIAL_S", "0.25")
+    monkeypatch.setenv("GH_BACKOFF_MAX_S", "4")
+    monkeypatch.setenv("GH_RETRY_ATTEMPTS", "5")
+    monkeypatch.setenv("GH_REQUEST_TIMEOUT_S", "30")
+    s = load_from_env()
+    assert s.token_expiry_skew_s == 120.0
+    assert s.static_bearer_ttl_s == 1200
+    assert s.api_key_ttl_s == 3600
+    assert s.imds_api_version == "2019-08-01"
+    assert s.backoff_initial_s == 0.25
+    assert s.backoff_max_s == 4.0
+    assert s.retry_attempts == 5
+    assert s.request_timeout_s == 30.0
+
+
+def test_token_lifecycle_defaults_are_safe(monkeypatch, tmp_path):
+    """Out of the box the defaults should match the prior hardcoded values."""
+    _apply_env(monkeypatch, _BASE_ENV)
+    monkeypatch.setenv("GH_AUDIT_LOG_PATH", str(tmp_path / "a.jsonl"))
+    s = load_from_env()
+    assert s.token_expiry_skew_s == 60.0
+    assert s.static_bearer_ttl_s == 600
+    assert s.api_key_ttl_s == 86_400
+    assert s.imds_api_version == "2018-02-01"
+    assert s.backoff_initial_s == 0.5
+    assert s.backoff_max_s == 8.0

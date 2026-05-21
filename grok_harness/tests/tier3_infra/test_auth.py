@@ -553,3 +553,115 @@ async def test_build_token_provider_rejects_unknown_mode(settings):
     async with httpx.AsyncClient() as http:
         with pytest.raises(ValueError, match="unknown auth_mode"):
             build_token_provider(settings, http)
+
+
+# ============================================================================
+# Parameterization — verify the cross-cutting knobs actually take effect.
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_token_expiry_skew_is_threaded_into_bearer_token(
+    settings, azure_token_url
+):
+    """Every provider must construct BearerToken with the configured skew."""
+    from pydantic import SecretStr
+
+    settings.token_expiry_skew_s = 300.0  # 5 minutes
+    settings.azure.client_secret = SecretStr("s")
+
+    async with respx.mock() as router:
+        router.post(azure_token_url).mock(
+            return_value=httpx.Response(
+                200, json={"access_token": "az", "expires_in": 3600}
+            )
+        )
+        async with httpx.AsyncClient() as http:
+            tok = await ClientSecretTokenProvider(settings, http).get_token()
+
+    assert tok.expiry_skew_s == 300.0
+
+
+@pytest.mark.asyncio
+async def test_static_bearer_ttl_is_configurable(settings):
+    from pydantic import SecretStr
+
+    settings.static_bearer_ttl_s = 1800  # 30 minutes
+    settings.azure.static_bearer = SecretStr("eyJ.token")
+    async with httpx.AsyncClient() as http:
+        tok = await StaticBearerTokenProvider(settings, http).get_token()
+    # Token must be valid ~30 minutes from now (allow a few seconds slack).
+    assert 1750 < (tok.expires_at - time.time()) <= 1800
+
+
+@pytest.mark.asyncio
+async def test_api_key_ttl_is_configurable(settings):
+    from pydantic import SecretStr
+
+    settings.api_key_ttl_s = 3600  # 1 hour
+    settings.azure.api_key = SecretStr("sk-xyz")
+    async with httpx.AsyncClient() as http:
+        tok = await ApiKeyTokenProvider(settings, http).get_token()
+    assert 3550 < (tok.expires_at - time.time()) <= 3600
+
+
+@pytest.mark.asyncio
+async def test_imds_api_version_is_configurable(settings):
+    """Setting GH_IMDS_API_VERSION must change the api-version query parameter."""
+    settings.imds_api_version = "2019-08-01"
+    imds = ManagedIdentityTokenProvider.IMDS_ENDPOINT
+
+    async with respx.mock(assert_all_called=True) as router:
+        route = router.get(imds).mock(
+            return_value=httpx.Response(
+                200, json={"access_token": "mi", "expires_in": 3600}
+            )
+        )
+        async with httpx.AsyncClient() as http:
+            await ManagedIdentityTokenProvider(settings, http).get_token()
+
+    assert route.calls[0].request.url.params["api-version"] == "2019-08-01"
+
+
+@pytest.mark.asyncio
+async def test_backoff_settings_flow_into_auth_retry(settings, keycloak_token_url):
+    """Tiny backoff lets a 5xx-then-200 chain complete quickly under test."""
+    settings.backoff_initial_s = 0.01
+    settings.backoff_max_s = 0.02
+    settings.retry_attempts = 2
+
+    async with respx.mock() as router:
+        route = router.post(keycloak_token_url)
+        route.side_effect = [
+            httpx.Response(503, json={"error": "x"}),
+            httpx.Response(200, json={"access_token": "kc", "expires_in": 60}),
+        ]
+        # Stub the Azure leg so the chain completes.
+        router.post(_azure_token_url_for(settings)).mock(
+            return_value=httpx.Response(
+                200, json={"access_token": "az", "expires_in": 3600}
+            )
+        )
+        start = time.perf_counter()
+        async with httpx.AsyncClient() as http:
+            await FederatedTokenProvider(settings, http).get_token()
+        elapsed = time.perf_counter() - start
+
+    # With ~10-20ms backoff between attempts, total elapsed must be << 1s.
+    assert elapsed < 1.0
+    assert route.call_count == 2
+
+
+def _azure_token_url_for(settings) -> str:
+    return (
+        f"{str(settings.azure.authority).rstrip('/')}/"
+        f"{settings.azure.tenant_id}/oauth2/v2.0/token"
+    )
+
+
+def test_bearer_token_skew_field_drives_expired_property():
+    """A 5-minute skew means a token expiring in 2 minutes already reads expired."""
+    near = BearerToken(value="x", expires_at=time.time() + 120, expiry_skew_s=300)
+    far = BearerToken(value="x", expires_at=time.time() + 120, expiry_skew_s=60)
+    assert near.expired is True
+    assert far.expired is False

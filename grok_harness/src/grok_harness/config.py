@@ -96,6 +96,29 @@ class HarnessSettings(BaseModel):
     max_concurrency: int = Field(default=4, ge=1, le=64)
     request_timeout_s: float = Field(default=60.0, gt=0)
     retry_attempts: int = Field(default=3, ge=0, le=10)
+    backoff_initial_s: float = Field(default=0.5, gt=0)
+    backoff_max_s: float = Field(default=8.0, gt=0)
+
+    # Token caching / expiry behavior — provider-agnostic knobs.
+    token_expiry_skew_s: float = Field(
+        default=60.0,
+        ge=0,
+        description="Treat a token as expired this many seconds before its real expiry.",
+    )
+    static_bearer_ttl_s: int = Field(
+        default=600,
+        gt=0,
+        description="Optimistic validity assumed for an out-of-band Azure AD bearer.",
+    )
+    api_key_ttl_s: int = Field(
+        default=86_400,
+        gt=0,
+        description="Cache TTL for the api_key provider (API keys are long-lived).",
+    )
+    imds_api_version: str = Field(
+        default="2018-02-01",
+        description="API version sent to the Azure Instance Metadata Service.",
+    )
 
     # TLS / FIPS
     ca_bundle: Path | None = Field(
@@ -234,4 +257,12 @@ def load_from_env() -> HarnessSettings:
             os.environ.get("GH_AUDIT_LOG_PATH", "/var/log/grok-harness/audit.jsonl")
         ),
         max_concurrency=int(os.environ.get("GH_MAX_CONCURRENCY", "4")),
+        retry_attempts=int(os.environ.get("GH_RETRY_ATTEMPTS", "3")),
+        request_timeout_s=float(os.environ.get("GH_REQUEST_TIMEOUT_S", "60")),
+        backoff_initial_s=float(os.environ.get("GH_BACKOFF_INITIAL_S", "0.5")),
+        backoff_max_s=float(os.environ.get("GH_BACKOFF_MAX_S", "8.0")),
+        token_expiry_skew_s=float(os.environ.get("GH_TOKEN_EXPIRY_SKEW_S", "60")),
+        static_bearer_ttl_s=int(os.environ.get("GH_STATIC_BEARER_TTL_S", "600")),
+        api_key_ttl_s=int(os.environ.get("GH_API_KEY_TTL_S", "86400")),
+        imds_api_version=os.environ.get("GH_IMDS_API_VERSION", "2018-02-01"),
     )
