@@ -39,6 +39,7 @@ your prompts.
 | **Policy and safety** | Does it refuse what it should and avoid leaking CUI/PII? | `refusal`, `not_contains` | [`examples/safety.yaml`](examples/safety.yaml) |
 | **SLO budgets** | Does it stay within latency and token limits? | `max_latency_ms`, `max_tokens`, `min_tokens` | [`examples/slo.yaml`](examples/slo.yaml) |
 | **Combined smoke** | All of the above in one suite for a quick deploy check. | mixed | [`examples/full-suite.yaml`](examples/full-suite.yaml) |
+| **Scale-up / throughput** | Where does the deployment break under concurrent load? | n/a — driven by `grok-harness load` | any suite |
 
 ### Functional output journey
 
@@ -90,9 +91,65 @@ You want to catch latency or output-length regressions across deploys.
 grok-harness run examples/slo.yaml --junit-out out/slo.xml
 ```
 
-SLO assertions are best evaluated on a representative traffic mix.
-Bump `max_concurrency` (via `GH_MAX_CONCURRENCY`) to load-test in
-parallel, but stay within your deployment's rate-limit budget.
+SLO assertions check a single shot per case. For *deployment-level* SLOs
+under load (p95 across hundreds of requests, throughput per second, error
+rate under saturation), use `grok-harness load` — see the next section.
+
+### Scale-up / throughput journey
+
+`grok-harness run` tests prompt correctness one shot at a time.
+`grok-harness load` replays cases from a suite under increasing
+concurrency to characterize the deployment itself — find the knee where
+latency degrades or errors spike, set rate-limit budgets, and catch
+regressions in scale-out.
+
+```bash
+# Step ramp: 1, 2, 4, 8, 16 concurrent workers, 10s per step,
+# fail the run if any step exceeds 800ms p95 or 5% errors.
+grok-harness load examples/functional.yaml \
+  --profile step-ramp --max-concurrency 16 --duration 10 \
+  --max-p95-latency-ms 800 --max-error-rate 0.05 \
+  --json-out out/load.json
+```
+
+Output is a per-step table with concurrency, requests, successes,
+errors, p50/p95/p99 latency, throughput (RPS), and any failed SLO
+gates:
+
+```
+Load test: suite=functional auth_mode=client_secret steps=5 passed=True
+
+  conc  dur(s)   reqs    ok   err    p50    p95    p99   rps  gates
+  ----  ------  -----  ----  ----  -----  -----  -----  ----  -----
+     1    10.0     35    35     0    240    320    350   3.5  ok
+     2    10.0     65    65     0    245    330    380   6.5  ok
+     4    10.0    120   118     2    260    450    600  12.0  ok
+     8    10.0    220   200    20    320    700    900  22.0  ok
+    16    10.0    300   240    60    450   1200   2800  30.0  FAIL: p95 latency 1200ms > 800ms
+```
+
+The JSON report has the full per-step metrics including `errors_by_status`
+(429 vs 500 vs other), so you can separate throttling from server errors.
+
+**Profiles:**
+
+| Profile | When to use | Knobs |
+| --- | --- | --- |
+| `step-ramp` *(default)* | Find the knee — concurrency doubles from 1 to `--max-concurrency` | `--max-concurrency`, `--duration` |
+| `sustained` | Stability test at a fixed level | `--concurrency`, `--duration` |
+| `custom` | Bespoke step plan | `--steps '1:5,4:10,16:30'` |
+
+**SLO gates** (any combination):
+
+| Flag | Fails the step if … |
+| --- | --- |
+| `--max-p95-latency-ms` | p95 exceeds the threshold |
+| `--max-error-rate` | error fraction (0..1) exceeds the threshold |
+| `--min-throughput-rps` | sustained throughput falls below the threshold |
+
+A non-zero exit code on any failed gate makes this drop straight into a
+CI gate. Pair with the audit log forwarded to a metrics backend to
+trend p95 / throughput / 429 rate over time.
 
 ---
 
@@ -270,7 +327,7 @@ useful for partial-credit gates.
 ### Journey 4 — SLO regression check across deploys
 
 **Scenario:** After a deployment scale-out, confirm p95 latency and
-output length haven't drifted.
+output length haven't drifted on representative traffic.
 
 ```bash
 # Auth env for whichever environment you're hitting
@@ -278,8 +335,31 @@ export GH_MAX_CONCURRENCY=8
 grok-harness run examples/slo.yaml --json-out out/slo.json
 ```
 
-Inspect `out/slo.json` for per-case `latency_ms`. The audit log captures
-every request so you can compute aggregate p50/p95/p99 offline.
+Inspect `out/slo.json` for per-case `latency_ms`. For *aggregate* p95
+across hundreds of requests, see Journey 4b below.
+
+### Journey 4b — Find the deployment's knee under load
+
+**Scenario:** Before promoting a new model rev, characterize where it
+breaks. You want a step ramp that confirms it holds an SLO at the
+expected concurrency and surfaces the failure mode beyond that.
+
+```bash
+# Auth env for whichever environment you're hitting
+grok-harness load examples/functional.yaml \
+  --profile step-ramp --max-concurrency 32 --duration 15 \
+  --max-p95-latency-ms 1000 --max-error-rate 0.02 \
+  --min-throughput-rps 10 \
+  --json-out out/load-ramp.json
+```
+
+The exit code is non-zero on the first step that breaches a gate, so
+this drops into a CI promotion gate. Trend the per-step JSON over time
+to spot drift before users do.
+
+For stability instead of capacity, use `--profile sustained
+--concurrency 8 --duration 600` (10 minutes at 8 concurrent) and watch
+the p95 stay flat.
 
 ### Journey 5 — Local iteration on prompts
 
@@ -369,11 +449,12 @@ grok_harness/
 │   ├── slo.yaml               # latency / token budgets
 │   └── full-suite.yaml        # combined smoke suite
 ├── src/grok_harness/
-│   ├── __main__.py            # click CLI: `grok-harness run <suite.yaml>`
+│   ├── __main__.py            # click CLI: `grok-harness run|load`
 │   ├── config.py              # env-driven settings + TLS context
 │   ├── auth.py                # six pluggable token providers + factory
 │   ├── client.py              # Grok 4.3 chat-completions client
-│   ├── evaluators.py          # assertion kinds
+│   ├── evaluators.py          # assertion kinds (one-shot correctness)
+│   ├── load.py                # step-ramp load runner + SLO gates
 │   ├── loader.py              # YAML -> TestSuite
 │   ├── runner.py              # async, concurrency-bounded suite execution
 │   ├── reporter.py            # JSON + JUnit + console
@@ -401,10 +482,10 @@ is organized into three importance tiers and can be sliced via pytest
 markers:
 
 ```bash
-pytest -m core            # the prompt-testing loop (35 tests)
-pytest -m io              # suite authoring + reporting (13 tests)
-pytest -m infra           # auth + config + audit (55+ tests)
-pytest                    # all of the above (103+ tests)
+pytest -m core            # the prompt-testing loop + load runner
+pytest -m io              # suite authoring + reporting
+pytest -m infra           # auth + config + audit
+pytest                    # all of the above (121 tests)
 ```
 
 Every external surface (Keycloak, Azure AD, IMDS, Grok) is mocked via
