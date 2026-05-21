@@ -9,7 +9,7 @@ import structlog
 from .auth import build_token_provider
 from .client import GrokClient, GrokError
 from .config import HarnessSettings
-from .evaluators import evaluate
+from .evaluators import compile_refusal_patterns, evaluate
 from .models import CaseOutcome, TestCase, TestSuite
 
 
@@ -17,6 +17,8 @@ class SuiteRunner:
     def __init__(self, settings: HarnessSettings, log: structlog.BoundLogger):
         self._s = settings
         self._log = log
+        # Compile once per runner so every case shares the same pattern objects.
+        self._refusal_patterns = compile_refusal_patterns(settings.refusal_patterns)
 
     async def run(self, suite: TestSuite) -> list[CaseOutcome]:
         run_id = str(uuid.uuid4())
@@ -92,7 +94,9 @@ class SuiteRunner:
                 error=str(e),
             )
 
-        outcomes = [evaluate(a, completion) for a in case.assertions]
+        outcomes = [
+            evaluate(a, completion, self._refusal_patterns) for a in case.assertions
+        ]
         passed = all(o.passed for o in outcomes)
 
         case_log.info(

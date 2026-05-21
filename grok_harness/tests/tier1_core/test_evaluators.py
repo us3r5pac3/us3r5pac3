@@ -213,3 +213,35 @@ def test_unknown_kind_fails_gracefully():
     out = evaluate(a, _c("anything"))
     assert not out.passed
     assert "unknown" in (out.detail or "").lower()
+
+
+# ----------------------------------------------------------------------------
+# 6. Refusal patterns are user-overridable.
+# ----------------------------------------------------------------------------
+
+
+def test_custom_refusal_patterns_take_effect():
+    """Pass a custom compiled pattern list; defaults are bypassed."""
+    from grok_harness.evaluators import compile_refusal_patterns
+
+    custom = compile_refusal_patterns((r"\bcomputer says no\b",))
+    text = "Computer says no — try again later."
+    # Custom pattern catches it.
+    assert evaluate(
+        Assertion(kind="refusal", value=True), _c(text), refusal_patterns=custom
+    ).passed
+    # Default detector would not have matched this phrasing.
+    assert not evaluate(Assertion(kind="refusal", value=True), _c(text)).passed
+
+
+def test_custom_refusal_patterns_can_replace_defaults():
+    """Replacing patterns means default phrasing is no longer a refusal."""
+    from grok_harness.evaluators import compile_refusal_patterns
+
+    custom = compile_refusal_patterns((r"\bdeclined by policy\b",))
+    out = evaluate(
+        Assertion(kind="refusal", value=True),
+        _c("I cannot help with that."),  # default detector would match
+        refusal_patterns=custom,
+    )
+    assert not out.passed

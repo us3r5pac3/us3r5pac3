@@ -19,10 +19,15 @@ class GrokError(RuntimeError):
         self.request_id = request_id
 
 
-def _is_retryable(exc: BaseException) -> bool:
-    if isinstance(exc, GrokError):
-        return exc.status in (408, 429, 500, 502, 503, 504)
-    return isinstance(exc, (httpx.TimeoutException, httpx.ConnectError, httpx.RemoteProtocolError))
+def _make_is_retryable(statuses: tuple[int, ...]):
+    """Build a retry predicate bound to the configured retryable statuses."""
+    def _is_retryable(exc: BaseException) -> bool:
+        if isinstance(exc, GrokError):
+            return exc.status in statuses
+        return isinstance(
+            exc, (httpx.TimeoutException, httpx.ConnectError, httpx.RemoteProtocolError)
+        )
+    return _is_retryable
 
 
 class GrokClient:
@@ -44,11 +49,10 @@ class GrokClient:
         self._http = http
 
     async def complete(self, case: TestCase) -> CompletionResult:
-        base = str(self._s.azure.endpoint).rstrip("/")
-        url = (
-            f"{base}/openai/deployments/"
-            f"{self._s.azure.deployment}/chat/completions"
-            f"?api-version={self._s.azure.api_version}"
+        url = self._s.azure.url_template.format(
+            endpoint=str(self._s.azure.endpoint).rstrip("/"),
+            deployment=self._s.azure.deployment,
+            api_version=self._s.azure.api_version,
         )
         body = {
             "messages": [m.model_dump() for m in case.messages],
@@ -67,7 +71,7 @@ class GrokClient:
                 initial=self._s.backoff_initial_s,
                 max=self._s.backoff_max_s,
             ),
-            retry=retry_if_exception(_is_retryable),
+            retry=retry_if_exception(_make_is_retryable(self._s.retry_statuses)),
             reraise=True,
         ):
             with attempt:

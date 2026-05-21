@@ -147,6 +147,20 @@ The JSON report has the full per-step metrics including `errors_by_status`
 | `--max-error-rate` | error fraction (0..1) exceeds the threshold |
 | `--min-throughput-rps` | sustained throughput falls below the threshold |
 
+### Behavioral knobs
+
+Every value the harness uses is either set from env or is a documented
+default. The four most likely to need per-deployment tuning:
+
+| Env var | What it changes | Default |
+| --- | --- | --- |
+| `GH_RETRY_STATUSES` | HTTP statuses that trigger a Grok retry | `408,429,500,502,503,504` |
+| `GH_GROK_URL_TEMPLATE` | Path shape under the endpoint host | Azure OpenAI / Foundry |
+| `GH_REFUSAL_PATTERNS_FILE` | Regexes (one per line) used by the `refusal` assertion | three built-in patterns |
+| `GH_AUDIT_REDACT_FIELDS` | CSV of audit-log field names to SHA-256 hash | `prompt,response,content,messages` |
+
+The full env-var inventory is in [`examples/.env.example`](examples/.env.example).
+
 A non-zero exit code on any failed gate makes this drop straight into a
 CI gate. Pair with the audit log forwarded to a metrics backend to
 trend p95 / throughput / 429 rate over time.
@@ -485,7 +499,7 @@ markers:
 pytest -m core            # the prompt-testing loop + load runner
 pytest -m io              # suite authoring + reporting
 pytest -m infra           # auth + config + audit
-pytest                    # all of the above (121 tests)
+pytest                    # all of the above (137 tests)
 ```
 
 Every external surface (Keycloak, Azure AD, IMDS, Grok) is mocked via

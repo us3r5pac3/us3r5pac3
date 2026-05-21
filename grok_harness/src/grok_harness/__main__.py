@@ -64,7 +64,11 @@ def run(
     """Run a suite of test cases against Grok 4.3."""
     settings = load_from_env()
     _check_fips(settings.enforce_fips)
-    log = configure_audit(settings.audit_log_path, settings.redact_prompts_in_audit)
+    log = configure_audit(
+        settings.audit_log_path,
+        settings.redact_prompts_in_audit,
+        settings.audit_redact_fields,
+    )
 
     suite_obj = load_suite(suite)
     runner = SuiteRunner(settings, log)
@@ -217,7 +221,11 @@ def load(
     """
     settings = load_from_env()
     _check_fips(settings.enforce_fips)
-    log = configure_audit(settings.audit_log_path, settings.redact_prompts_in_audit)
+    log = configure_audit(
+        settings.audit_log_path,
+        settings.redact_prompts_in_audit,
+        settings.audit_redact_fields,
+    )
 
     suite_obj = load_suite(suite)
 

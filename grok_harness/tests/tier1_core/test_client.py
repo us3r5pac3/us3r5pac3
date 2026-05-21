@@ -289,3 +289,62 @@ async def test_grok_error_fields():
     assert err.status == 500
     assert err.request_id == "req-1"
     assert "Grok 4.3 returned 500" in str(err)
+
+
+# ----------------------------------------------------------------------------
+# 9. Parameterized knobs flow end-to-end into wire behavior.
+# ----------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_custom_url_template_changes_request_url(settings):
+    """Override the URL template for Azure AI Foundry serverless / xAI direct."""
+    settings.azure.url_template = "{endpoint}/v1/chat/completions"
+    expected = "https://grok-43.eastus2.inference.ml.azure.us/v1/chat/completions"
+    async with respx.mock(assert_all_called=True) as router:
+        route = router.post(expected).mock(
+            return_value=httpx.Response(200, json=_ok_body())
+        )
+        async with httpx.AsyncClient() as http:
+            await GrokClient(settings, _StubTokens(), http).complete(
+                TestCase(id="t", messages=[Message(role="user", content="x")])
+            )
+    assert route.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_retry_statuses_setting_skips_retry_on_unlisted_status(
+    settings, grok_completions_url
+):
+    """503 normally retries; with retry_statuses=(429,), 503 is not retryable."""
+    settings.retry_statuses = (429,)
+    async with respx.mock() as router:
+        route = router.post(grok_completions_url).mock(
+            return_value=httpx.Response(503, json={"error": "x"})
+        )
+        async with httpx.AsyncClient() as http:
+            with pytest.raises(GrokError) as ei:
+                await GrokClient(settings, _StubTokens(), http).complete(
+                    TestCase(id="t", messages=[Message(role="user", content="x")])
+                )
+    # Single attempt: 503 is no longer in retry_statuses.
+    assert route.call_count == 1
+    assert ei.value.status == 503
+
+
+@pytest.mark.asyncio
+async def test_retry_statuses_setting_can_add_status(settings, grok_completions_url):
+    """Add 418 as retryable -> harness retries on a 418-then-200 chain."""
+    settings.retry_statuses = (429, 418, 503)
+    async with respx.mock() as router:
+        route = router.post(grok_completions_url)
+        route.side_effect = [
+            httpx.Response(418, json={"error": "teapot"}),
+            httpx.Response(200, json=_ok_body()),
+        ]
+        async with httpx.AsyncClient() as http:
+            res = await GrokClient(settings, _StubTokens(), http).complete(
+                TestCase(id="t", messages=[Message(role="user", content="x")])
+            )
+    assert res.content == "Paris."
+    assert route.call_count == 2
