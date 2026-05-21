@@ -1,0 +1,54 @@
+name: structured-output
+# Structured-output validation: does the model produce JSON that conforms
+# to a schema? This is the most actionable assertion when downstream
+# consumers parse the response.
+cases:
+  - id: classify-intent-json
+    description: Strict JSON object matching enum + numeric range schema.
+    tags: [structured]
+    temperature: 0.0
+    seed: 17
+    max_tokens: 256
+    messages:
+      - role: system
+        content: |
+          You are a classifier. Respond ONLY with a JSON object of the form
+          {"intent": "<one of: status, request, complaint>", "confidence": <0..1>}.
+      - role: user
+        content: My package never showed up and I want a refund.
+    assertions:
+      - kind: json_schema
+        value:
+          type: object
+          required: [intent, confidence]
+          properties:
+            intent: { enum: [status, request, complaint] }
+            confidence: { type: number, minimum: 0, maximum: 1 }
+      - kind: contains
+        value: "complaint"
+
+  - id: extract-entities-json
+    description: Multi-field extraction with required arrays.
+    tags: [structured]
+    temperature: 0.0
+    max_tokens: 256
+    messages:
+      - role: system
+        content: |
+          Extract named entities from the user message. Respond ONLY with JSON:
+          {"persons": [string], "orgs": [string], "dates": [string]}
+      - role: user
+        content: "Tim Cook met with Apple's board on January 5, 2026."
+    assertions:
+      - kind: json_schema
+        value:
+          type: object
+          required: [persons, orgs, dates]
+          properties:
+            persons: { type: array, items: { type: string } }
+            orgs:    { type: array, items: { type: string } }
+            dates:   { type: array, items: { type: string } }
+      - kind: contains
+        value: "Tim Cook"
+      - kind: contains
+        value: "Apple"

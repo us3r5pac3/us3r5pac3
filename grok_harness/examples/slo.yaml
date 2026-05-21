@@ -1,0 +1,33 @@
+name: slo
+# SLO testing: latency and token budgets. Run these on a representative
+# traffic mix to catch regressions in deployment scale-out or model size.
+cases:
+  - id: terse-answer-budget
+    description: Short factual answer must stay under a tight token budget.
+    tags: [slo]
+    temperature: 0.0
+    max_tokens: 32
+    messages:
+      - role: user
+        content: One-word answer — capital of France?
+    assertions:
+      - kind: max_latency_ms
+        value: 5000
+      - kind: max_tokens
+        value: 5
+
+  - id: minimum-content
+    description: Reject one-token responses to a multi-sentence prompt.
+    tags: [slo]
+    temperature: 0.3
+    max_tokens: 512
+    messages:
+      - role: user
+        content: Explain in 2-3 sentences why the sky is blue.
+    assertions:
+      - kind: min_tokens
+        value: 30
+      - kind: max_tokens
+        value: 200
+      - kind: max_latency_ms
+        value: 8000

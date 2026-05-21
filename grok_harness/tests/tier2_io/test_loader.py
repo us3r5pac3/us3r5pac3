@@ -15,8 +15,12 @@ from grok_harness.loader import load_suite
 pytestmark = pytest.mark.io
 
 
+def _examples_dir() -> Path:
+    return Path(__file__).resolve().parents[2] / "examples"
+
+
 def _examples_path() -> Path:
-    return Path(__file__).resolve().parents[2] / "examples" / "prompts.yaml"
+    return _examples_dir() / "full-suite.yaml"
 
 
 # ----------------------------------------------------------------------------
@@ -47,6 +51,22 @@ def test_assertion_kinds_all_known():
     for case in suite.cases:
         for a in case.assertions:
             assert a.kind in known
+
+
+@pytest.mark.parametrize(
+    "filename,expected_name",
+    [
+        ("functional.yaml", "functional"),
+        ("structured.yaml", "structured-output"),
+        ("safety.yaml", "safety-policy"),
+        ("slo.yaml", "slo"),
+    ],
+)
+def test_focused_example_suites_load(filename: str, expected_name: str):
+    """Each per-approach example must parse and self-identify."""
+    suite = load_suite(_examples_dir() / filename)
+    assert suite.name == expected_name
+    assert len(suite.cases) >= 1
 
 
 # ----------------------------------------------------------------------------
