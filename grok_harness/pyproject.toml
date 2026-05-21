@@ -1,0 +1,47 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "grok-harness"
+version = "0.1.0"
+description = "Prompt testing harness for Grok 4.3 on Azure Government, called from GCP with Keycloak-federated identity (IL5)."
+requires-python = ">=3.11"
+license = { text = "Apache-2.0" }
+dependencies = [
+    "httpx>=0.27,<1.0",
+    "pydantic>=2.7,<3.0",
+    "pyyaml>=6.0",
+    "structlog>=24.1",
+    "click>=8.1",
+    "tenacity>=8.3",
+    "cryptography>=42.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.2",
+    "pytest-asyncio>=0.23",
+    "respx>=0.21",
+    "ruff>=0.5",
+    "jsonschema>=4.22",
+]
+
+[project.scripts]
+grok-harness = "grok_harness.__main__:cli"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+markers = [
+    "core: the prompt-testing loop itself — assertion logic, prompt -> response client, suite runner",
+    "io: how prompts are authored and results are consumed — YAML loader, reporters, CLI",
+    "infra: identity federation, transport/config, audit logging — required to operate, not what is under test",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
