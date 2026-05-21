@@ -100,6 +100,7 @@ class StepMetrics:
     latency_ms_max: float
     throughput_rps: float
     failed_gates: list[str] = field(default_factory=list)
+    notes: list[str] = field(default_factory=list)
 
     @property
     def passed(self) -> bool:
@@ -122,13 +123,30 @@ class LoadReport:
 
 
 def _percentile(sorted_ms: Sequence[float], q: float) -> float:
-    """Nearest-rank percentile on a pre-sorted list."""
+    """Linear-interpolation percentile (R-7), matching numpy and Excel defaults.
+
+    For q=0.95 on [10,10,...,10,2000,2000,...] with 15 fast + 5 slow samples
+    (N=20), this returns ~2000 (the slow tail dominates), whereas
+    nearest-rank would return a fast value because rank=ceil(20*0.95)=19
+    lands on the last fast sample. Linear interpolation matches what most
+    users expect 'p95' to mean.
+    """
     if not sorted_ms:
         return 0.0
     if len(sorted_ms) == 1:
         return sorted_ms[0]
-    rank = max(1, math.ceil(q * len(sorted_ms)))
-    return sorted_ms[rank - 1]
+    n = len(sorted_ms)
+    pos = q * (n - 1)
+    lo = int(pos)
+    hi = min(lo + 1, n - 1)
+    frac = pos - lo
+    return sorted_ms[lo] + (sorted_ms[hi] - sorted_ms[lo]) * frac
+
+
+# Sample-size thresholds below which percentile estimates are statistically
+# noisy. Reported as advisory notes on each step; don't fail the run.
+_MIN_SAMPLES_FOR_P99 = 100
+_MIN_SAMPLES_FOR_P95 = 20
 
 
 def _compute(step: LoadStep, outcomes: list[_Outcome], gates: SloGates) -> StepMetrics:
@@ -158,6 +176,16 @@ def _compute(step: LoadStep, outcomes: list[_Outcome], gates: SloGates) -> StepM
             f"throughput {throughput:.1f} rps < {gates.min_throughput_rps:.1f} rps"
         )
 
+    notes: list[str] = []
+    if requests < _MIN_SAMPLES_FOR_P95:
+        notes.append(
+            f"N={requests}: all percentile estimates noisy (need >= {_MIN_SAMPLES_FOR_P95})"
+        )
+    elif requests < _MIN_SAMPLES_FOR_P99:
+        notes.append(
+            f"N={requests}: p99 estimate noisy (need >= {_MIN_SAMPLES_FOR_P99} for stable p99)"
+        )
+
     return StepMetrics(
         concurrency=step.concurrency,
         duration_s=step.duration_s,
@@ -171,6 +199,7 @@ def _compute(step: LoadStep, outcomes: list[_Outcome], gates: SloGates) -> StepM
         latency_ms_max=p_max,
         throughput_rps=throughput,
         failed_gates=failed,
+        notes=notes,
     )
 
 

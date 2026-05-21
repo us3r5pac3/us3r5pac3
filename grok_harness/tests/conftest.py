@@ -18,11 +18,12 @@ from grok_harness.config import AzureSettings, HarnessSettings, KeycloakSettings
 # (e.g. new ones) fall to the end of their tier in alphabetical order.
 _INTRA_TIER_ORDER: dict[str, int] = {
     # tier1_core: send a prompt -> judge the response -> orchestrate a suite
-    # -> drive the suite under load
+    # -> drive the suite under load -> measure assertion quality
     "tier1_core/test_client.py": 0,
     "tier1_core/test_evaluators.py": 1,
     "tier1_core/test_runner.py": 2,
     "tier1_core/test_load.py": 3,
+    "tier1_core/test_calibrate.py": 4,
     # tier2_io: read suite -> emit results -> wire it together
     "tier2_io/test_loader.py": 0,
     "tier2_io/test_reporter.py": 1,

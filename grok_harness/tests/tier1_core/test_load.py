@@ -135,15 +135,24 @@ def test_percentile_handles_empty_and_single_sample():
     assert _percentile([42.0], 0.95) == 42.0
 
 
-def test_percentile_nearest_rank_on_known_sequence():
-    # 1..100 sorted. p50 -> 50, p95 -> 95, p99 -> 99.
+def test_percentile_linear_interpolation_on_known_sequence():
+    """R-7 linear interpolation on [1..100]:
+        p50 = 0.5 * 99 = pos 49.5 -> 50.5
+        p95 = 0.95 * 99 = pos 94.05 -> 95.05
+        p99 = 0.99 * 99 = pos 98.01 -> 99.01
+    """
     data = [float(i) for i in range(1, 101)]
-    assert _percentile(data, 0.50) == 50.0
-    assert _percentile(data, 0.95) == 95.0
-    assert _percentile(data, 0.99) == 99.0
+    assert _percentile(data, 0.50) == pytest.approx(50.5)
+    assert _percentile(data, 0.95) == pytest.approx(95.05)
+    assert _percentile(data, 0.99) == pytest.approx(99.01)
 
 
 def test_compute_aggregates_match_known_inputs():
+    """Linear interp on [1..10]:
+        p50: pos = 4.5 -> 5.5
+        p95: pos = 8.55 -> 9.55
+        p99: pos = 8.91 -> 9.91
+    """
     from grok_harness.load import _Outcome
 
     outcomes = [
@@ -153,9 +162,9 @@ def test_compute_aggregates_match_known_inputs():
     assert metrics.requests == 10
     assert metrics.successes == 10
     assert metrics.errors == 0
-    assert metrics.latency_ms_p50 == 5.0
-    assert metrics.latency_ms_p95 == 10.0
-    assert metrics.latency_ms_p99 == 10.0
+    assert metrics.latency_ms_p50 == pytest.approx(5.5)
+    assert metrics.latency_ms_p95 == pytest.approx(9.55)
+    assert metrics.latency_ms_p99 == pytest.approx(9.91)
     assert metrics.latency_ms_max == 10.0
     assert metrics.throughput_rps == 10.0
 
@@ -261,6 +270,40 @@ def test_all_gates_passing_step_is_passing():
     )
     assert metrics.passed is True
     assert metrics.failed_gates == []
+
+
+# ----------------------------------------------------------------------------
+# Low-sample warnings — advisory, don't fail the step.
+# ----------------------------------------------------------------------------
+
+
+def test_very_low_n_warns_all_percentiles_noisy():
+    """N < 20 means even p95 is statistically unreliable."""
+    from grok_harness.load import _Outcome
+
+    outcomes = [_Outcome(success=True, latency_ms=float(i), status=200) for i in range(15)]
+    metrics = _compute(LoadStep(concurrency=1, duration_s=1.0), outcomes, SloGates())
+    assert metrics.passed is True  # still passing — notes are advisory
+    assert any("all percentile estimates noisy" in n for n in metrics.notes)
+
+
+def test_low_n_warns_p99_only():
+    """20 <= N < 100 means p50/p95 are okay but p99 is noisy."""
+    from grok_harness.load import _Outcome
+
+    outcomes = [_Outcome(success=True, latency_ms=float(i), status=200) for i in range(50)]
+    metrics = _compute(LoadStep(concurrency=2, duration_s=1.0), outcomes, SloGates())
+    assert any("p99 estimate noisy" in n for n in metrics.notes)
+    assert not any("all percentile estimates" in n for n in metrics.notes)
+
+
+def test_high_n_emits_no_note():
+    """N >= 100 -> no advisory."""
+    from grok_harness.load import _Outcome
+
+    outcomes = [_Outcome(success=True, latency_ms=50.0, status=200) for _ in range(150)]
+    metrics = _compute(LoadStep(concurrency=4, duration_s=1.0), outcomes, SloGates())
+    assert metrics.notes == []
 
 
 # ----------------------------------------------------------------------------

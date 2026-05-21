@@ -40,6 +40,7 @@ your prompts.
 | **SLO budgets** | Does it stay within latency and token limits? | `max_latency_ms`, `max_tokens`, `min_tokens` | [`examples/slo.yaml`](examples/slo.yaml) |
 | **Combined smoke** | All of the above in one suite for a quick deploy check. | mixed | [`examples/full-suite.yaml`](examples/full-suite.yaml) |
 | **Scale-up / throughput** | Where does the deployment break under concurrent load? | n/a — driven by `grok-harness load` | any suite |
+| **Refusal-detector calibration** | Are the refusal patterns accurate against *this* model's vocabulary? | n/a — driven by `grok-harness calibrate-refusal` | [`examples/refusal-labeled.jsonl`](examples/refusal-labeled.jsonl) |
 
 ### Functional output journey
 
@@ -94,6 +95,34 @@ grok-harness run examples/slo.yaml --junit-out out/slo.xml
 SLO assertions check a single shot per case. For *deployment-level* SLOs
 under load (p95 across hundreds of requests, throughput per second, error
 rate under saturation), use `grok-harness load` — see the next section.
+
+### Refusal-detector calibration journey
+
+The `refusal` assertion uses regex matching against natural-language
+refusal phrasings. The default patterns are tuned to a generic model
+voice; different deployments refuse with different vocabulary. Before
+treating `refusal` as a safety gate, calibrate it against responses
+from your actual Grok deployment:
+
+```bash
+# Author a JSONL with at least 50 examples per class (recommended):
+#   {"text": "...", "label": "refusal"}
+#   {"text": "...", "label": "compliance"}
+# See examples/refusal-labeled.jsonl for the format.
+
+grok-harness calibrate-refusal labeled.jsonl \
+  --require-precision 0.9 --require-recall 0.85 \
+  --json-out out/refusal-calibration.json
+```
+
+Output is a confusion matrix (TP/FN/FP/TN), precision/recall/F1,
+per-pattern hit counts, and the misclassified examples so you can see
+exactly which phrasings the patterns miss. Non-zero exit on a
+threshold breach drops it into a pre-promotion gate.
+
+If precision is fine but recall is low, write a `GH_REFUSAL_PATTERNS_FILE`
+with patterns that match the missing phrasings. Re-run calibration. The
+loop is bounded.
 
 ### Scale-up / throughput journey
 
@@ -463,12 +492,13 @@ grok_harness/
 │   ├── slo.yaml               # latency / token budgets
 │   └── full-suite.yaml        # combined smoke suite
 ├── src/grok_harness/
-│   ├── __main__.py            # click CLI: `grok-harness run|load`
+│   ├── __main__.py            # click CLI: `grok-harness run|load|calibrate-refusal`
 │   ├── config.py              # env-driven settings + TLS context
 │   ├── auth.py                # six pluggable token providers + factory
 │   ├── client.py              # Grok 4.3 chat-completions client
 │   ├── evaluators.py          # assertion kinds (one-shot correctness)
 │   ├── load.py                # step-ramp load runner + SLO gates
+│   ├── calibrate.py           # refusal-pattern precision/recall scoring
 │   ├── loader.py              # YAML -> TestSuite
 │   ├── runner.py              # async, concurrency-bounded suite execution
 │   ├── reporter.py            # JSON + JUnit + console
@@ -499,7 +529,8 @@ markers:
 pytest -m core            # the prompt-testing loop + load runner
 pytest -m io              # suite authoring + reporting
 pytest -m infra           # auth + config + audit
-pytest                    # all of the above (137 tests)
+pytest                    # all non-live tiers (148 tests, live skipped)
+GH_LIVE=1 pytest tests/live  # one auth + one prompt round-trip against real services
 ```
 
 Every external surface (Keycloak, Azure AD, IMDS, Grok) is mocked via
