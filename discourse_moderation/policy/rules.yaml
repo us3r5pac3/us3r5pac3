@@ -1,0 +1,366 @@
+# Forum moderation policy — as code.
+#
+# This file is the single source of truth for moderation behavior. Every rule
+# maps 1:1 to a row in the policy spec (forummoderationpolicyspec.md). Changes
+# here are the change-controlled surface (spec AUT-006): reviewers approve YAML,
+# not Python.
+#
+# Field reference
+#   id                    Stable rule identifier from the spec.
+#   name                  Human-readable name.
+#   tier                  T0 | T1 | T2 | P  (drives automation authority, spec §2).
+#   detectors             Detector names (see detectors.py) that can fire this rule.
+#   auto_action           Action automation may take at/above auto_action_threshold.
+#   human_role            Role the system routes to (mod_queue, issm, privacy_officer, ...).
+#   reversible_by         Who may reverse the action: automation | moderator | issm.
+#   sla_minutes           Deadline for the human_action / alert (spec §8).
+#   authority             Legal/policy authority cited by the spec.
+#   bypass_strikes        true => opens an incident, consumes no strike (T0, spec §3).
+#   never_remove          true => automation may only route; removal forbidden (P tier).
+#   escalate              Optional extra routing (e.g. security for threats).
+#   auto_action_threshold Confidence at/above which auto_action fires (spec AUT-002).
+#   flag_only_threshold   Confidence at/above which the post is flagged (queue) but not actioned.
+#   policy_excerpt        Text shown to the poster in the transparency notice (spec §4).
+
+version: "0.1.0"
+
+rules:
+  # ---- Tier 0 — Security (auto-quarantine, never delete) --------------------
+  - id: SEC-001
+    name: Classification spillage
+    tier: T0
+    detectors: [classification_markings]
+    auto_action: quarantine
+    human_role: issm
+    reversible_by: issm
+    sla_minutes: 15
+    authority: DoDM 5200.01
+    bypass_strikes: true
+    auto_action_threshold: 0.5
+    flag_only_threshold: 0.2
+    policy_excerpt: >-
+      Content bearing classification or portion markings was held for security
+      review. Disposition is directed by the ISSM.
+
+  - id: SEC-002
+    name: CUI above forum ceiling
+    tier: T0
+    detectors: [cui_markings]
+    auto_action: quarantine
+    human_role: issm
+    reversible_by: issm
+    sla_minutes: 15
+    authority: DoDI 5200.48
+    bypass_strikes: true
+    auto_action_threshold: 0.5
+    flag_only_threshold: 0.2
+    policy_excerpt: >-
+      Content marked CUI above this environment's accreditation ceiling was held
+      for security review.
+
+  - id: SEC-003
+    name: Credentials / secrets
+    tier: T0
+    detectors: [secrets]
+    auto_action: redact
+    human_role: cyber
+    reversible_by: issm
+    sla_minutes: 15
+    authority: AUP / cyber hygiene
+    bypass_strikes: true
+    auto_action_threshold: 0.5
+    flag_only_threshold: 0.3
+    policy_excerpt: >-
+      Credential or secret material was detected and redacted. A credential
+      rotation ticket was opened.
+
+  - id: SEC-004
+    name: PII / PHI
+    tier: T0
+    detectors: [pii]
+    auto_action: quarantine
+    human_role: privacy_officer
+    reversible_by: issm
+    sla_minutes: 60
+    authority: Privacy Act
+    bypass_strikes: true
+    auto_action_threshold: 0.5
+    flag_only_threshold: 0.3
+    policy_excerpt: >-
+      Content containing personally identifiable or protected health
+      information was held pending a privacy breach assessment.
+
+  - id: SEC-005
+    name: OPSEC indicators
+    tier: T0
+    detectors: [opsec_lexicon]
+    auto_action: hide
+    human_role: opsec_officer
+    reversible_by: issm
+    sla_minutes: 60
+    authority: Program OPSEC CIL
+    bypass_strikes: true
+    auto_action_threshold: 0.5
+    flag_only_threshold: 0.3
+    policy_excerpt: >-
+      Content matching the program OPSEC critical-information list was held
+      pending OPSEC officer disposition.
+
+  # ---- Tier 1 — Prohibited conduct (auto-hide + human confirm) --------------
+  - id: CON-001
+    name: Harassment / bullying / hazing
+    tier: T1
+    detectors: [classifier_conduct]
+    auto_action: hide
+    human_role: mod_queue
+    reversible_by: automation
+    sla_minutes: 240
+    authority: DoDI 1020.03
+    auto_action_threshold: 0.85
+    flag_only_threshold: 0.6
+    policy_excerpt: >-
+      This content was hidden pending review for harassment, bullying, or
+      hazing under DoDI 1020.03.
+
+  - id: CON-002
+    name: Threats of violence
+    tier: T1
+    detectors: [classifier_conduct]
+    auto_action: hide
+    human_role: mod_queue
+    reversible_by: automation
+    escalate: security
+    sla_minutes: 240
+    authority: DoDI 1020.03 / criminal referral
+    auto_action_threshold: 0.85
+    flag_only_threshold: 0.6
+    policy_excerpt: >-
+      This content was hidden and escalated to security for assessment of a
+      threat of violence.
+
+  - id: CON-003
+    name: Discriminatory content (protected classes)
+    tier: T1
+    detectors: [classifier_conduct]
+    auto_action: hide
+    human_role: mod_queue
+    reversible_by: automation
+    sla_minutes: 240
+    authority: EEO / DoDI 1020.03
+    auto_action_threshold: 0.85
+    flag_only_threshold: 0.6
+    policy_excerpt: >-
+      This content was hidden pending review for discriminatory content
+      targeting a protected class.
+
+  - id: CON-004
+    name: Obscene / sexually explicit
+    tier: T1
+    detectors: [classifier_conduct]
+    auto_action: hide
+    human_role: mod_queue
+    reversible_by: automation
+    sla_minutes: 240
+    authority: AUP
+    auto_action_threshold: 0.85
+    flag_only_threshold: 0.6
+    policy_excerpt: >-
+      This content was hidden pending review as obscene or sexually explicit
+      material under the Acceptable Use Policy.
+
+  - id: CON-005
+    name: Partisan political activity
+    tier: T1
+    detectors: [classifier_conduct]
+    auto_action: hide
+    human_role: mod_queue
+    reversible_by: automation
+    sla_minutes: 240
+    authority: Hatch Act / 5 CFR 734
+    auto_action_threshold: 0.85
+    flag_only_threshold: 0.6
+    policy_excerpt: >-
+      This content was hidden pending review for partisan political activity on
+      a government system (Hatch Act).
+
+  - id: CON-006
+    name: Commercial endorsement / solicitation / fundraising (non-CFC)
+    tier: T1
+    detectors: [classifier_conduct]
+    auto_action: hide
+    human_role: mod_queue
+    reversible_by: automation
+    sla_minutes: 240
+    authority: 5 CFR 2635.702
+    auto_action_threshold: 0.85
+    flag_only_threshold: 0.6
+    policy_excerpt: >-
+      This content was hidden pending review for prohibited commercial
+      endorsement, solicitation, or fundraising.
+
+  # CON-007: military contemptuous speech — FLAG ONLY, never auto-hide.
+  # Command adjudicates, not the forum team (UCMJ Arts. 88/89).
+  - id: CON-007
+    name: Contemptuous / disrespectful speech re officials (military posters)
+    tier: T1
+    detectors: [classifier_conduct]
+    auto_action: flag_only
+    human_role: mod_queue
+    reversible_by: automation
+    sla_minutes: 240
+    authority: UCMJ Arts. 88/89
+    auto_action_threshold: 0.85
+    flag_only_threshold: 0.6
+    policy_excerpt: >-
+      This content was flagged for human review. Contemptuous-speech matters are
+      referred to command, which adjudicates — the forum team does not.
+
+  - id: CON-008
+    name: Impersonation / false authority
+    tier: T1
+    detectors: [classifier_conduct]
+    auto_action: label_unverified
+    human_role: mod_queue
+    reversible_by: automation
+    sla_minutes: 240
+    authority: AUP
+    auto_action_threshold: 0.85
+    flag_only_threshold: 0.6
+    policy_excerpt: >-
+      This content was labeled "unverified" pending review for impersonation or
+      claims of false authority.
+
+  # ---- Tier 2 — Usage (full auto, soft) -------------------------------------
+  - id: USE-001
+    name: Off-topic / wrong channel
+    tier: T2
+    detectors: [usage_offtopic]
+    auto_action: move
+    human_role: none
+    reversible_by: automation
+    auto_action_threshold: 0.7
+    flag_only_threshold: 0.5
+    policy_excerpt: >-
+      This post was moved to a more appropriate channel.
+
+  - id: USE-002
+    name: Duplicate / spam / flood
+    tier: T2
+    detectors: [usage_flood]
+    auto_action: rate_limit
+    human_role: none
+    reversible_by: automation
+    auto_action_threshold: 0.7
+    flag_only_threshold: 0.5
+    policy_excerpt: >-
+      Posting was rate-limited due to duplicate or high-frequency posting.
+
+  - id: USE-003
+    name: Thread hijacking
+    tier: T2
+    detectors: [usage_offtopic]
+    auto_action: move
+    human_role: none
+    reversible_by: automation
+    auto_action_threshold: 0.7
+    flag_only_threshold: 0.5
+    policy_excerpt: >-
+      This post was split into its own thread to keep the original on topic.
+
+  - id: USE-004
+    name: Necro-posting on archived threads
+    tier: T2
+    detectors: [usage_necro]
+    auto_action: move
+    human_role: none
+    reversible_by: automation
+    auto_action_threshold: 0.7
+    flag_only_threshold: 0.5
+    policy_excerpt: >-
+      This reply to an archived thread was redirected to a new thread.
+
+  - id: USE-005
+    name: Oversized / unsupported attachments
+    tier: T2
+    detectors: [usage_attachment]
+    auto_action: hide
+    human_role: none
+    reversible_by: automation
+    auto_action_threshold: 0.7
+    flag_only_threshold: 0.5
+    policy_excerpt: >-
+      An attachment was rejected for exceeding size limits or using an
+      unsupported type.
+
+  - id: USE-006
+    name: Missing required tags / template
+    tier: T2
+    detectors: [usage_template]
+    auto_action: hide
+    human_role: none
+    reversible_by: automation
+    auto_action_threshold: 0.7
+    flag_only_threshold: 0.5
+    policy_excerpt: >-
+      This post is held from the feed until required tags or the incident
+      template are supplied.
+
+  # ---- Protected — automation may only ROUTE (never remove) -----------------
+  - id: PRO-001
+    name: IG / whistleblower disclosures
+    tier: P
+    detectors: [classifier_protected]
+    auto_action: route_only
+    human_role: none
+    reversible_by: automation
+    never_remove: true
+    authority: 5 U.S.C. 2302(b)(8) / 10 U.S.C. 1034
+    auto_action_threshold: 0.6
+    flag_only_threshold: 0.4
+    policy_excerpt: >-
+      Protected disclosure. Your post was left in place; here is the proper IG
+      channel for formal filing.
+
+  - id: PRO-002
+    name: EEO complaints / safety reports
+    tier: P
+    detectors: [classifier_protected]
+    auto_action: route_only
+    human_role: none
+    reversible_by: automation
+    never_remove: true
+    authority: EEO / safety
+    auto_action_threshold: 0.6
+    flag_only_threshold: 0.4
+    policy_excerpt: >-
+      Protected report. Your post was left in place and routed to the EEO/safety
+      channel.
+
+  - id: PRO-003
+    name: Criticism of platform, policy, or leadership
+    tier: P
+    detectors: [classifier_protected]
+    auto_action: route_only
+    human_role: none
+    reversible_by: automation
+    never_remove: true
+    authority: Employee speech (Pickering-Connick)
+    auto_action_threshold: 0.6
+    flag_only_threshold: 0.4
+    policy_excerpt: >-
+      Criticism of platform, policy, or leadership is never auto-actioned;
+      default disposition is allow.
+
+  - id: PRO-004
+    name: Union / protected labor activity
+    tier: P
+    detectors: [classifier_protected]
+    auto_action: route_only
+    human_role: none
+    reversible_by: automation
+    never_remove: true
+    authority: Protected labor activity
+    auto_action_threshold: 0.6
+    flag_only_threshold: 0.4
+    policy_excerpt: >-
+      Protected labor activity is never auto-actioned; human review only.

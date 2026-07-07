@@ -1,0 +1,25 @@
+# Per-environment configuration surface (policy spec §10).
+#
+# These knobs vary by deployment/accreditation and are read at load time.
+# Everything here is data, not code: an ISSM or ops owner can tune a deployment
+# without touching the engine.
+
+environment: il5              # il5 | il6-gdc
+data_ceiling: cui             # cui | secret | ts-sci  (drives SEC-002 lexicon)
+cil_lexicon: default          # ref to the OPSEC critical-information list bundle
+
+strike_decay_days: 180        # 180 days without a violation clears one strike
+t1_confirm_ttl_hours: 24      # T1 auto-hide auto-restores if unconfirmed past this
+
+max_posts_per_window:         # USE-002 rate limit
+  n: 10
+  window_minutes: 10
+
+# Records retention class per channel (GRS 6.4 default unless a program
+# schedule supersedes). Used by disposition jobs outside this engine.
+retention_class:
+  default: grs-6.4
+  incidents: program-schedule
+
+model_backend: stub           # classifier backend within accreditation boundary
+model_version: stub-0         # logged per decision (spec AUT-004)
